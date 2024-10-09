@@ -1,0 +1,5959 @@
+---
+title: "KFC 2023 exploratory data analysis report"
+author: "WP1, Helsinki"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_float: 
+      collapsed: false
+      smooth_scroll: false
+    number_sections: true
+     
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, warning = F, message = F, cache = F)
+```
+
+```{r, echo=F}
+## Load packages
+library(tidyverse)
+stopifnot(require('janitor'))
+stopifnot(require('haven'))
+stopifnot(require('labelled'))
+stopifnot(require('knitr'))
+stopifnot(require('here'))
+stopifnot(require('qualtRics'))
+stopifnot(require('GGally'))
+stopifnot(require('factoextra'))
+stopifnot(require('FactoMineR'))
+stopifnot(require('questionr'))#for describing multiple choice questions
+stopifnot(require('finalfit'))#for easy reporting uni/multi-variate modelling results
+stopifnot(require('igraph'))
+stopifnot(require('patchwork'))
+knitr::opts_chunk$set(echo=TRUE)
+```
+
+# read data
+
+Data cleansing was in a separate file, generating the initial data-sets for analysis. Here we read read them. 
+
+```{r, echo=F}
+# get data file path
+droot <- here()
+fp_label <- file.path(droot, "KFC2023", "data", "kfc2023_cleaned.csv")
+fp_nolabel <- file.path(droot, "KFC2023", "data", "kfc2023_cleaned_nolabel.csv")
+
+# for variable labeling
+latest <- "Kattfjord_v3.0_2023.01.18 - FERDIG_June 1, 2023_17.44.csv"
+fp_all <- file.path(droot, "KFC2023", "data", latest)
+```
+
+```{r, echo=F}
+## Read data (full vars)
+kfc_allvars_label <- 
+  haven::read_sav(
+    fp_label
+  )
+kfc_allvars_nolabel <- 
+  readr::read_csv(
+    fp_nolabel
+  )
+
+var_label(kfc_allvars_nolabel) <- var_label(kfc_allvars_label) 
+ 
+kfc_all <- kfc_allvars_nolabel
+
+## for variable label 
+kfcdata_all <- 
+  qualtRics::read_survey(
+    fp_all,
+    add_var_labels = T
+  ) |> 
+  janitor::clean_names() 
+lab <- var_label(kfcdata_all)
+```
+
+## Assign variable type 
+
+Variables in the data-set were assigned as either categorical (un-ordered factor), ordinal (ordered factor) or continuous (numeric). 
+
+## Categorical (un-ordered factor)
+
+These variables were categorical: "group_nr"(group number), "parking" (parking lot), "beacon" (beacon check behavior), variables starting with "f_present" (snow factors that were observed); "dp_dpic" (if assess avalanche risk) and more (to check them, see the code below)
+
+```{r}
+#These variables are set to be factors without order
+kfc_all <- 
+  kfc_all %>% 
+  mutate(
+    across(c(
+      ip_address,
+      group_nr,
+      parking,
+      beacon,
+      dp_dic,
+      mountain,
+      starts_with("f_present"),
+      starts_with("f_crit"),
+      starts_with("t_factor"),
+      starts_with("why_ski"),
+      starts_with("why_notski"),
+      cp,
+      firstime_ever,
+      later,
+      starts_with("avieduc_rec"),
+      group_category,
+      danger_high_est,
+      danger_low_est,
+      date_fa,
+    ), as.factor)
+  )
+#ordinal: info_prior, n_trips, snow_interpret, snow_freq,avi_prob_number, outcome_dp,outcome_nodm, avieduc_rec
+#ordinal: out_ava, r_dv_ci, bc_years, bc_days, skill_avi, 
+#numeric: r_dv_pe, age, info_high_detail, response_size
+# timestamp: date
+```
+
+## Ordinal (ordered factor)
+
+These variables were regarded as and hence converted to ordinal:
+
+For the ordering the the levels, check the code "levels = c(...,...,...)" below each sub-title. 
+
++ Convert variables "info_prior_#" to ordinal (information collection during planning phase)
+
+```{r}
+kfc_all <- 
+  kfc_all  %>% 
+  mutate(
+    across(starts_with("info_"), as.character),
+    across(starts_with("info_"), ~replace(., str_detect(.,"^High detail.*"), "High detail")),
+    across(starts_with("info_"), ~replace(., str_detect(.,"^Low detail.*"), "Low detail")),
+    across(starts_with("info_"), ~replace(., str_detect(.,"^No detail.*"), "No detail")) 
+  )%>%
+  mutate(across(starts_with("info_"), ~factor(., 
+                                              ordered = T,
+                                              levels = c("No detail",
+                                                        "Low detail",
+                                                        "High detail")) ))
+```
+
+
++ Convert variables "n_trips" to ordinal (number of similar trips, 5 years)
+
+```{r}
+kfc_all$freq_trips <-  
+  factor(
+    kfc_all$freq_trips,
+    levels = c(
+      "None - This was my first time",
+      "Once",
+      "2 - 3 times",
+      "4 - 10 times",
+      "More than 10 times"
+    ),
+    ordered = T
+  )
+```
+
++ Convert variables "snow_interpret_#" to ordinal (how observation affect assessment)
+
+```{r}
+snow_interpret_cols <- 
+  kfc_all |> 
+  dplyr::select(
+    starts_with("snow_interpret"),
+    -snow_interpret_1
+  ) |> 
+  colnames()
+kfc_all[,all_of(snow_interpret_cols)] <- 
+  lapply(
+    kfc_all[,all_of(snow_interpret_cols)], 
+    function(x)factor(
+      x, 
+      ordered = T, 
+      levels = 
+        c("Reduced avalanche risk", "No effect", "Increased avalanche risk")
+      )
+    )
+```
+
+
++ Convert variable "snow_freq" to ordinal (snow factor information collection frequency)
+
+```{r}
+kfc_all$snow_freq <- 
+  factor(
+    kfc_all$snow_freq,
+    ordered = TRUE,
+    levels = 
+      c(
+        "Once during the tour",
+        "A few times during the tour",
+        "Several times during the tour",
+        "Continuously during the tour"
+      )
+  )
+```
+
++ Convert variable "avi_prob_number_#_#" to ordinal (independent variables: likelihood estimates and confidence in the estimates)
+
+```{r}
+avi_likelihood_cols <- c(
+  "avi_prob_number_1_1",
+  "avi_prob_number_1_2"
+)
+
+kfc_all[, all_of(avi_likelihood_cols)] <- 
+  lapply(
+    kfc_all[, all_of(avi_likelihood_cols)],
+    function(x)factor(
+      x,
+      ordered = T,
+      levels =
+        c(
+          "Excluded",
+          "Unlikely",
+          "Possible",
+          "Likely",
+          "Almost certain"
+        )
+    )
+  )
+```
+
+```{r}
+avi_likelihood_confidence_cols <- c(
+  "avi_prob_number_2_1",
+  "avi_prob_number_2_2"
+)
+
+kfc_all[, all_of(avi_likelihood_confidence_cols)] <- 
+  lapply(
+    kfc_all[, all_of(avi_likelihood_confidence_cols)],
+    function(x)factor(
+      x,
+      ordered = T,
+      levels =
+        c(
+          "Very low",
+          "Low",
+          "Medium",
+          "High",
+          "Very high"
+        )
+    )
+  )
+```
+
++ Convert variables "outcome_dp" and "outcome_nodm" to ordinal (self-reported outcomes, for decision makers and non-decision makers, respectively)
+
+Note that there are 5 possible levels but only three levels show up in the data.
+
+```{r}
+kfc_all$outcome_dp <- 
+  factor(
+    kfc_all$outcome_dp,
+    ordered = T,
+    levels = 
+      c(
+        "I/we did not observe any signs of instability",
+        "We saw some signs of instability (e.g., whumpfs/cracks) but there was no avalanche activity on the slope",
+        "The slope avalanched, but no one was caught"
+        #"The slope avalanched, someone was caught but did not get buried/injured", 
+        #"The slope avalanched, someone was caught and someone got injured/buried"
+      ) #no one has selected the last two choices yet
+  )
+```
+
+```{r}
+kfc_all$outcome_nodm <- 
+  factor(
+    kfc_all$outcome_nodm,
+    ordered = T,
+    levels = 
+      c(
+        "I/we did not observe any signs of instability",
+        "We saw some signs of instability (e.g., whumpfs/cracks) but there was no avalanche activity on the slope",
+        "A slope that I/we were on avalanched, but no one was caught",
+        "A slope that I/we were on avalanched, someone was caught but did not get buried/injured",
+        "A slope that I/we were on avalanched, someone got injured/buried"
+      )
+  )
+```
+
++ Convert edu_highest to ordinal (the highest avalanche education received)
+
+```{r}
+kfc_all$edu_highest <- 
+  factor(
+    kfc_all$edu_highest,
+    ordered = T,
+    levels =
+      c(
+        "Basic",
+        "Advanced",
+        "Professional",
+        "None"
+      )
+  )
+```
+
++ Convert variable "out_ava" to ordinal (the size of the avalanche met during trip)
+
+Note that this variable has two levels, and hence is discrete in a techniqual sense.
+
+```{r}
+kfc_all$out_ava <- 
+  factor(
+    kfc_all$out_ava,
+    ordered = T,
+    levels =
+      c(
+        "Size 1 (small) ",
+        "Size 2 (medium) or larger"
+      )
+         )
+```
+
+(9) Convert variable "r_dv_ci" to ordinal (range of error in steepness estimate)
+
+```{r}
+kfc_all$r_dv_ci_1 <- 
+  factor(
+    kfc_all$r_dv_ci_1,
+    ordered = TRUE,
+    levels = 
+      c(
+        "+/- more than 6 degrees",
+        "+/- 6 degrees",
+        "+/- 5 degrees",
+        "+/- 4 degrees",
+        "+/- 3 degrees",
+        "+/- 2 degrees",
+        "+/- 1 degrees"
+      )
+  )
+
+kfc_all$r_dv_ci_2 <- 
+ factor(
+    kfc_all$r_dv_ci_2,
+    ordered = TRUE,
+    levels = 
+      c(
+        "+/- more than 6 degrees",
+        "+/- 6 degrees",
+        "+/- 5 degrees",
+        "+/- 4 degrees",
+        "+/- 3 degrees",
+        "+/- 2 degrees",
+        "+/- 1 degrees"
+      )
+  )
+
+
+
+```
+
++ Convert variable "bc_years" to ordinal (years of bc experience)
+
+```{r}
+kfc_all$bc_years <- 
+  factor(
+    kfc_all$bc_years,
+    ordered = T,
+    levels = 
+      c(
+        "Less than 1 year",
+        "1 - 2 years",
+        "3 - 5 years",
+        "6 - 10 years",
+        "11 - 20 years",
+        "More than 20 years"
+      )
+  )
+```
+
++ Convert variable "bc_days" to ordinal (bc days per season)
+
+```{r}
+kfc_all$bc_days <- 
+  factor(
+    kfc_all$bc_days,
+    ordered = T,
+    levels = 
+      c(
+        "2 days or less",
+        "3 - 7 days",
+        "8 - 14 days",
+        "15 - 30 days",
+        "30 - 50 days",
+        "More than 50 days"
+      )
+  )
+```
+
++ Convert variable "skill_avi" to ordinal (self-assessed skill)
+
+```{r}
+skill_avi_value <- kfc_all$skill_avi |> unique() |> na.omit()
+
+kfc_all <- 
+  kfc_all |> 
+  mutate(
+    skill_avi =
+      case_when(
+        # skill_avi ==
+        #   skill_avi_value[str_detect(skill_avi_value, "^Level 1.*")] ~ "Level 1",
+        skill_avi == 
+          skill_avi_value[str_detect(skill_avi_value, "^Level 2.*")] ~ "Level 2",
+        skill_avi ==
+          skill_avi_value[str_detect(skill_avi_value, "^Level 3.*")] ~ "Level 3",
+        skill_avi ==
+          skill_avi_value[str_detect(skill_avi_value, "^Level 4.*")] ~ "Level 4",
+        skill_avi ==
+          skill_avi_value[str_detect(skill_avi_value, "^Level 5.*")] ~ "Level 5",
+        skill_avi == 
+          skill_avi_value[str_detect(skill_avi_value, "^Level 6.*")] ~ "Level 6",
+        TRUE ~ NA_character_
+      )
+  )
+
+kfc_all$skill_avi <- 
+  factor(
+    kfc_all$skill_avi,
+    ordered = TRUE,
+    levels = 
+      c(
+        "Level 1",
+        "Level 2",
+        "Level 3",
+        "Level 4",
+        "Level 5",
+        "Level 6"
+      )
+  )
+```
+
++ Convert variables "danger_high_est" and "danger_low_est" (likelihood estimate, dichotomized)
+
+```{r}
+kfc_all$danger_high_est <- 
+  factor(
+    kfc_all$danger_high_est,
+    ordered = T,
+    levels =
+      c(
+        "low to none possibility",
+        "moderate to high possibility"
+      )
+  )
+```
+
+```{r}
+kfc_all$danger_low_est <- 
+  factor(
+    kfc_all$danger_low_est,
+    ordered = T,
+    levels =
+      c(
+        "low to none possibility",
+        "moderate to high possibility"
+      )
+  )
+```
+
++ Convert variables "danger_high_confidence" and "danger_low_confidence"  (confidence in likelihood estimates, re-leveled )
+
+This includes "danger_high_confidence" (trichotomized confidence in high danger avalanche likelihood);"danger_high_confidence" (trichotomized confidence in low danger avalanche likelihood);"danger_high_confidence_2" (dichotomized confidence in high danger avalanche likelihood);"danger_high_confidence_2" (dichotomized confidence in low danger avalanche likelihood)
+
+```{r}
+kfc_all$danger_high_confidence <- 
+  factor(
+    kfc_all$danger_high_confidence,
+    ordered = T,
+    levels =
+      c(
+        "Low to very low",
+        "Medium",
+        "High to very high"
+      )
+  )
+```
+
+```{r}
+kfc_all$danger_low_confidence <- 
+  factor(
+    kfc_all$danger_low_confidence,
+    ordered = T,
+    levels =
+      c(
+        "Low to very low",
+        "Medium",
+        "High to very high"
+      )
+  )
+```
+
+```{r}
+kfc_all$danger_high_confidence_2 <-
+  factor(
+    kfc_all$danger_high_confidence_2,
+    ordered = T,
+    levels =
+      c(
+        "Medium to very low",
+        "High to very high"
+      )
+  )
+```
+
+```{r}
+kfc_all$danger_low_confidence_2 <- 
+  factor(
+    kfc_all$danger_low_confidence_2,
+    ordered = T,
+    levels =
+      c(
+        "Medium to very low",
+        "High to very high"
+      )
+  )
+```
+
+```{r}
+# mean confidence 
+kfc_all <- 
+  kfc_all %>%
+  mutate(
+    danger_low_confidence_num = as.numeric(danger_low_confidence),
+    danger_high_confidence_num = as.numeric(danger_high_confidence)) |> 
+  mutate(
+    danger_mean_confidence = 
+      rowMeans(
+        across(
+          c(
+            "danger_low_confidence_num",
+            "danger_high_confidence_num"
+            )
+          ), 
+        na.rm = T
+        ) |> as.numeric(),
+    danger_mean_confidence_2l = 
+      case_when(
+        danger_mean_confidence %in% c(1,1.5,2) ~ "low confidence",
+        danger_mean_confidence %in% c(2.5,3) ~ "high confidence",
+        TRUE~NA_character_
+    ) |> factor(ordered = T, levels = c("low confidence", "high confidence"))
+)
+
+```
+
++ Convert group establishment to ordinal (how much tour together)
+
+```{r}
+kfc_all$trust <- 
+  factor(
+    kfc_all$trust,
+    ordered = T,
+    levels = c("New", "Relatively new", "Established")
+  )
+```
+
++ Convert group dynamics to ordinal
+
+```{r}
+kfc_all$soc_groupdyn <- 
+  factor(
+    kfc_all$soc_groupdyn,
+    ordered = T,
+    levels = 
+      c(
+        "Somewhat negative",
+        "Neither positive nor negative",
+        "Somewhat positive",
+        "Extremely positive"
+      )
+  ) 
+```
+
+
+## Numeric
+
+"r_dv_pe" (steepness estimate), "age", "response_size" (group size) and all the variables starting with "n_" (created by counting the number of different types of factors used) are numeric. 
+
+```{r}
+kfc_all <- 
+  kfc_all |> 
+  mutate(
+    across(
+      c(
+        "r_dv_pe_1_1",
+        "r_dv_pe_2_1",
+        "age",
+        "response_size",
+        starts_with("n_")
+      ),
+      as.numeric
+    )
+  )
+```
+
+# Select variable for analysis
+
+For variables used for analysis, their variable type and re-assigned name, and the meaning, check the code below. 
+
+```{r}
+#selected variables
+kfc <- 
+  kfc_all |> 
+  dplyr::select(
+    'index',
+    'start_date', #[timestamp]
+    #'end_date', 
+    #'status', 
+    #'ip_address', 
+    #'progress', 
+    #'duration_in_seconds', 
+    #'duration_cal',
+    #'finished', 
+    #'recorded_date', '
+    'response_id', 
+    #'recipient_last_name', 
+    #'recipient_first_name', 
+    #'recipient_email', 
+    #'external_reference', 
+    #'location_latitude', 
+    #'location_longitude', 
+    #'distribution_channel', 
+    #'user_language', 
+    'group_nr', #[factor]group number; week1's were approximation
+    'parking',  #[factor]Where at?
+    'gps_nr',  #[factor]GPS number
+    #'consent', 
+    'n_people', #[numeric]group size
+    info_ava.fcast =
+    'info_prior_1', #[ordinal factor]prior tour information detail- avalanche forecast
+    info_weather.fcast =
+    'info_prior_2', #[ordinal factor]XXX - weather forecast
+    info_regobs = 
+    'info_prior_3', #[ordinal factor]XXX - RegObs
+    info_talknowldb =
+    'info_prior_4', #[ordinal factor]XXX - talk to the knowledgeable
+    info_own.track =
+    'info_prior_5', #[ordinal factor]XXX - own tracking
+    'beacon', #[factor]becon check
+    'dp_dic', #[factor]if the group assessed avalanche risk
+    'mountain', #[factor]critical slope mountain
+    'intended_run_skit_1_x', # pins indicating a slope  
+    'intended_run_skit_1_y', 
+    'intended_run_skit_2_x', 
+    'intended_run_skit_2_y', 
+    'intended_run_djevel_1_x', 
+    'intended_run_djevel_1_y', 
+    'intended_run_djevel_2_x', 
+    'intended_run_djevel_2_y', 
+    'intended_run_stor_1_x', 
+    'intended_run_stor_1_y', 
+    'intended_run_stor_2_x', 
+    'intended_run_stor_2_y', 
+    'decision', #[factor]critical slope decision
+    'freq_trips',  #[ordinal factor]5 years, number of trips, the slope
+    #start of a multiple choice question
+    f_pres_no = 
+    'f_present_104', #f[factor]actor observed--no
+    f_pres_unfamiliar =
+    'f_present_105', #[factor]factor observed -- not familar
+    f_pres_avativity =
+    'f_present_1',   #[factor]factor observed -- avalanche activity
+    f_pres.whumpfs =
+    'f_present_2',   #[factor]factor observed -- Whumpfs
+    f_pres.shoot =
+    'f_present_21',  #[factor]factor observed -- Shooting cracks
+    f_pres.drum =
+    'f_present_3',   #[factor]factor observed -- Drum-like sounds
+    #end of a multiple choice question
+    
+    #start of a multiple choice question
+    af_none = 
+    'f_crit_34',#[factor]ava factor  -- None
+    af_pres.avativity =
+    'f_crit_1', #[factor]ava factor  -- Presence of avalanche activity
+    af_abs.avativity =
+    'f_crit_2', #[factor]ava factor  -- Absence of avalanche activity
+    af_pres.whumpf =
+    'f_crit_3', #[factor]ava factor  -- Presence of whumpf(s)
+    af_abs.whumpf =
+    'f_crit_4', #[factor]ava factor  -- Absence of whumpf(s)
+    af_pres.shoot =
+    'f_crit_5', #[factor]ava factor  -- Presence of shooting cracks
+    af_abs.shoot =
+    'f_crit_6', #[factor]ava factor  -- Absence of shooting cracks
+    af_pres.drum =
+    'f_crit_7', #[factor]ava factor  -- Presence of drum-like sounds
+    af_abs.drum =
+    'f_crit_8', #[factor]ava factor  -- Absence of drum-like sounds
+    af_ski.track =
+    'f_crit_9', #[factor]ava factor  -- Recent ski tracks
+    af_urban.snow =
+    'f_crit_35',#[factor]ava factor  -- Regularly and often skied throughout the season
+    af_viscues.wsnow =
+    'f_crit_11',#[factor]ava factor  -- Visual cues of wind affected snow
+    af_wind.speed =
+    'f_crit_13',#[factor]ava factor  -- Wind speed
+    af_amount.wsnow =
+    'f_crit_14',#[factor]ava factor  -- Amount wind loaded snow
+    af_amount.new.sw =
+    'f_crit_16',#[factor]ava factor  -- Amount of new snow
+    af_amount.rain =
+    'f_crit_18',#[factor]ava factor  -- Amount of rain
+    af_fastwarm =
+    'f_crit_20',#[factor]ava factor  -- Rapid warming
+    af_temp24to72 =
+    'f_crit_22',#[factor]ava factor  -- Temperature last 24h or 72h
+    af_solar.rad =
+    'f_crit_23',#[factor]ava factor  -- Solar radiation during tour
+    af_slab.hard =
+    'f_crit_25',#[factor]ava factor  -- Slab hardness
+    af_hard.diff.layers =
+    'f_crit_26',#[factor]ava factor  -- Hardness difference between relevant layers
+    af_hard.underly.sw =
+    'f_crit_27',#[factor]ava factor  -- Hardness of underlying snow
+    af_fail.plane.qua =
+    'f_crit_28',#[factor]ava factor  -- Failure plane shear quality (Q1, Q2, Q3)
+    af_wlayer.dist =
+    'f_crit_29',#[factor]ava factor  -- Weak layer dist. from surface
+    af_wlayer.thick =
+    'f_crit_30',#[factor]ava factor  -- weak layer thickness
+    af_wlayer.grain.tp =
+    'f_crit_31',#[factor]ava factor  -- weak layer grain type
+    af_wlayer.grain.siz =
+    'f_crit_32',#[factor]ava factor  -- weak layer grain size
+    af_formal.test =
+    'f_crit_33',#[factor]ava factor  -- formal test
+     #end of a multiple choice question
+    
+    snow_freq,  #[ordinal factor]How often information collection  
+    
+    #start of a multiple choice question
+    'snow_interpret_1', #[factor]obs affect assessment -- None of these factors
+    'snow_interpret_2', #[factor]obs affect assessment -- Presence of avalanche activity
+    'snow_interpret_3', #[factor]obs affect assessment -- Absence of avalanche activity
+    'snow_interpret_4', #[factor]obs affect assessment -- Presence of whumpf(s)
+    'snow_interpret_5', #[factor]obs affect assessment -- Absence of whumpf(s)
+    'snow_interpret_6', #[factor]obs affect assessment -- Presence of shooting cracks
+    'snow_interpret_7', #[factor]obs affect assessment -- Absence of shooting cracks
+    'snow_interpret_8', #[factor]obs affect assessment -- Presence of drum-like sounds
+    'snow_interpret_9', #[factor]obs affect assessment -- Absence of drum-like sounds
+    'snow_interpret_10', #[factor]obs affect assessment -- Recent ski tracks
+    'snow_interpret_11', #[factor]obs affect assessment -- Regularly and often skied 
+    'snow_interpret_12', #[factor]obs affect assessment -- Visual cues of wind affected snow
+    'snow_interpret_13', #[factor]obs affect assessment -- Wind speed
+    'snow_interpret_14', #[factor]obs affect assessment -- Amount wind loaded snow
+    'snow_interpret_15', #[factor]obs affect assessment -- Amount of new snow
+    'snow_interpret_16', #[factor]obs affect assessment -- Amount of rain
+    'snow_interpret_17', #[factor]obs affect assessment -- Rapid warming
+    'snow_interpret_18', #[factor]obs affect assessment -- Temperature last 24h or 72h
+    'snow_interpret_19', #[factor]obs affect assessment -- Solar radiation during tour
+    'snow_interpret_20', #[factor]obs affect assessment -- Slab hardness
+    'snow_interpret_21', #[factor]obs affect assessment -- Hardness difference bt layers
+    'snow_interpret_22', #[factor]obs affect assessment -- Hardness of underlying snow
+    'snow_interpret_23', #[factor]obs affect assessment -- Failure plane shear quality 
+    'snow_interpret_24', #[factor]obs affect assessment -- Weak layer dist. from surface
+    'snow_interpret_25', #[factor]obs affect assessment -- Weak layer thickness
+    'snow_interpret_26', #[factor]obs affect assessment -- Weak layer grain type
+    'snow_interpret_27', #[factor]obs affect assessment -- Grain size in weak layer
+    'snow_interpret_28', #[factor]obs affect assessment -- stability tests
+     #end of a multiple choice question
+    
+    #start of a multiple choice question
+    likelihood_s1 =
+      'avi_prob_number_1_1', #[ordinal factor]Likelihood  - Size 1 (small)
+    likelihood_s2 =
+      'avi_prob_number_1_2', #[ordinal factor]Likelihood  - Size 2 (medium) or larger
+    confidence_s1 =
+      'avi_prob_number_2_1', #[ordinal factor]confidence in est is: - Size 1 (small)
+    confidence_s2 =
+      'avi_prob_number_2_2', #[ordinal factor]confidence in est is: - Size 2 (medium) or larger
+    #end of a multiple choice question
+    
+    #start of a multiple choice question
+    t_f_idn =
+    't_factor_9', #[factor]terrain factor--not familiar /don't know
+    t_f_none =
+    't_factor_2', #[factor]terrain factor--None of these factors
+    t_f_cln.runout =
+    't_factor_6', #[factor]terrain factor--The slope had a clean run-out (no terrain traps)
+    t_f_hi.angle =
+    't_factor_5', #[factor]terrain factor--The slope angle was relatively high
+    t_f_low.angle =
+    't_factor_1', #[factor]terrain factor--The slope angle was relatively low
+    t_f_big.slope =
+    't_factor_10', #[factor]terrain factor--The slope was relatively big
+    t_f_smll.slope =
+    't_factor_11', #[factor]terrain factor--The slope was relatively small
+    t_f_wo.safe.spt =
+    't_factor_13', #[factor]terrain factor--The slope did not have safe spots
+    t_f_w.safe.spt =
+    't_factor_12', #[factor]terrain factor--The slope had safe spots
+    #end of a multiple choice question
+    
+   
+    group_establish = 
+      'trust', #[ordinal factor]How much has this group toured together in ava terrain before?
+    'soc_groupdyn', #[ordinal factor]group dynamic
+    'leader', #[factor]anyone take the role of a (formal or informal) leader 
+    'leader_self', #[factor]Were you the leader
+    'groupdm_leader', #[factor]Did other contribute 
+    'groupdm_leader2', #[factor]Did you or others contribute
+    'groupdm_noleader', #[factor]Who made the decision
+    'soc_trust_1', #[numeric]trust each other 
+    trust = 
+      'soc_trust_1',
+    
+    #start of a multiple choice question
+    g_f_none =
+    'g_factor_8', #[factor]group factor--None
+    g_f_unfamiliar =
+    'g_factor_9', #[factor]group factor-- not familiar
+    g_f_asd.1by1 =
+    'g_factor_1', #[factor]group factor-- Ascending one-at-a-time exposed
+    g_f_desd.1by1 =
+    'g_factor_2', #[factor]group factor-- Descending one-at-a-time exposed
+    g_f_asd.wt.dist =
+    'g_factor_3', #[factor]group factor-- Ascending with a distance
+    g_f_desd.wt.dist =
+    'g_factor_4', #[factor]group factor-- Descending with a distance
+    g_f_sto.saf.spo =
+    'g_factor_5', #[factor]group factor-- Stopping at safe spots
+    g_f_clear.plan =
+    'g_factor_6', #[factor]group factor-- Clear directions/plan on where and how to ski
+    #end of a multiple choice question
+    
+    #start of a multiple choice question
+    yski_sf.confi =
+    'why_ski_1', #[factor]reason for decision--snow factor gives confidence
+    yski_tf.confi =
+    'why_ski_2', #[factor]reason for decision --terrain factor gives confidence
+    yski_tf.notrack = 
+    'why_ski_7', #[factor]reason for decision--The slope had no or few ski tracks
+    yski_tf.rgrdlss =
+    'why_ski_3', #[factor]reason for decision--ascend/descend regardless of conditions
+    yski_other.want =
+    'why_ski_5', #[factor]reason for decision-- Other people want to
+    yski_other.why =
+    'why_ski_6', #[factor]reason for decision -- Other reasons
+    #end of a multiple choice question
+    
+    #start of a multiple choice question
+    ynski_sf.danger =
+    'why_notski_1', #[factor]snow factors indicate danger
+    ynski_tf.danger =
+    'why_notski_2', #[factor]terrain factors indicate danger
+    ynski_many.track =
+    'why_notski_7', #[factor]The slope had too many ski tracks
+    ynski_rgrdlss =
+    'why_notski_3', #[factor]not ascend/descend regardless
+    ynski_other.want =
+    'why_notski_5', #[factor]Other people not want to
+    wnski_other.why =
+    'why_notski_6', #[factor]Other reasons
+    #end of a multiple choice question
+    
+    #start of a multiple choice question
+    'nodp_mountain', #On which mountain did you tour today
+    'nodp_skit_1_x', #pin the route (non-dm)
+    'nodp_skit_1_y', 
+    'nodp_skit_2_x', 
+    'nodp_skit_2_y', 
+    'nodp_stor_1_x', 
+    'nodp_stor_1_y', 
+    'nodp_stor_2_x', 
+    'nodp_stor_2_y', 
+    'nodp_djev_1_x', 
+    'nodp_djev_1_y', 
+    'nodp_djev_2_x', 
+    'nodp_djev_2_y', 
+    #end of a multiple choice question
+    
+    'outcome_dp', #[ordinal factor]What was the outcome of your decision?
+    'outcome_nodm', #[ordinal factor]"What was the outcome of your trip?
+    'out_ava', #[ordinal factor]What was the size of the avalanche?
+    'cp', #[factor]Care panel member?
+    'email_cp', 
+    'email_nocp', 
+    'r_dv_pe_1_1', #[numeric]Slope angle of steepest section
+    'r_dv_ci_1', #[factor]range of confidence
+    'r_dv_pe_2_1', #[numeric]Slope angle of steepest section for the second real slope
+     steep_confi =
+      'r_dv_ci_2', #[ordinal factor]range of confidence for slope angle estimation
+    'firstime_ever', #first time ever fill in the Tour log, this season?
+    'later', #fill them out now, or later
+    'birthy', 
+    'sex', 
+    'bc_years', #[ordinal factor]years of experience in bc skiing
+    'bc_days', #[ordinal factor]days per season, during a standard season, bc skiing
+    'skill_avi', #s[ordinal factor]kill in assessing and mitigating avalanche danger
+    edu_noformal =
+    'avieduc_rec_1', #[factor]training--no formal
+    edu_basic =
+    'avieduc_rec_2', #[factor]training--Basic recreational avalanche course
+    edu_advanced =
+    'avieduc_rec_3', #[factor]training--Advanced recreational avalanche course
+    edu_pro =
+    'avieduc_rec_15', #[factor]training--Avalanche training for professionals
+    
+    #below are variable newly generated
+    
+    #'duration_cal',
+    'index', #identifier
+    'filter_res', #[factor]researcher or civilian
+    'response_size', #[numeric]number of people in the group participated the survey
+    #'mean_group_size', 
+    'group_category', #four types of group: full res, partial res, single skier, 
+                     #inconsistent report
+    date = 'date',#[time-stamp] only date, no time
+    date_label = 'date_fa', # label date into week and day
+    "age",  #[numeric] 
+    "edu_highest", #[ordinal factor] The highest ava education took
+    risk_hi_est = 
+      "danger_high_est",#[factor] the level of high danger avalanche estimation 
+    risk_low_est =
+    "danger_low_est",#[factor]the level of low danger avalanche estimation 
+    risk_low_confi = 
+      "danger_low_confidence",#[ordinal factor] confi of the above low risk judgment-3 levels
+    risk_hi_confi =
+      "danger_high_confidence",#[ordinal factor]confi of the above high risk judgment- 3 levels
+    risk_hi_confi_2 =
+    "danger_high_confidence_2",#[ordinal factor] confi of the above high risk judgment-2 levels
+    risk_low_confi_2 = 
+    "danger_low_confidence_2", #[ordinal factor] confi of the above low risk judgment-2 levels
+    risk_mean_confi =
+    "danger_mean_confidence", #[numeric] turn 3 levels confi into numeric and calculate mean
+    risk_mean_confi_2l = 
+    "danger_mean_confidence_2l", #[Factor] Categorize the above variable into 2
+    n_info_h_detl =
+      "n_info_high_detail", #[numeric] occurrence of high detail plan phase info
+    n_info_l_detl =
+      "n_info_low_detail",#[numeric] occurrence of low detail plan phase info
+    n_info_n_detl =
+      "n_info_no_detail",#[numeric] occurrence of no detail plan phase info
+    "n_f_pres_abse" =
+      "n_f_present_absent",#[numeric] occurrence of presence/absence ava factor
+    "n_f_present",#[numeric] occurrence of presence ava factor
+    "n_f_absent",#[numeric] occurrence of absence/presence ava factor
+    "n_f_crit", #[numeric] occurence of any ava factor
+    "f_crit_category", #[Ordinal factor] convert the above variable to 3 category
+    n_sw_int_up =
+      "n_snow_interpret_increased",#[numeric] occurrence of increased risk interpretation
+    n_sw_int_down =
+      "n_snow_interpret_reduced",#[numeric] occurrence of reduced risk interpretation
+    n_sw_int_invar =
+      "n_snow_interpret_noeffect",#[numeric] occurrence no-effect danger interpretation
+    n_sw_int_idn =
+      "n_snow_interpret_idn",#[numeric] occurrence idn danger interpretation
+    "n_t_factor",#[numeric] number of terrain factors used
+    "n_g_factor" ,#[numeric] number of group factors used
+    "n_why_ski",#[numeric] number of reasons for skiing
+    "n_why_notski",#[numeric] number of reasons for not skiing
+    "n_edu",  #[numeric] number of types of education
+    n_pstg =
+      "n_all_pstg_factors", # [numeric]n of all plan, snow, terrain and group factor used
+    steep_confi_2l =
+      "r_dv_ci_2_2level", #[factor]categorize steep estimate confidence into two
+    #steep_confi =
+    #  'r_dv_ci_2', #[ordinal factor]range of confidence for slope angle estimation
+  )
+```
+
+```{r}
+kfc_all$danger_high_confidence_2 <- 
+  factor(
+    kfc_all$danger_high_confidence_2,
+    ordered = T,
+    levels =
+      c(
+        "Medium to very low",
+        "High to very high"
+      )
+  )
+```
+
+
+# Distribution of single choice variables
+
+Some questions in the survey require a single choice. Their distributions were described in the section.
+
+Plots in this section were generated after removing the NA(not saw the question) and seen but unanswered (-99) choices. To check the plots with NAs shown, disable the line "na.omit()|>" in the code. 
+
+```{r eval = F}
+# FIXME: the function in this chunk is not in use any more. Skip it. 
+#a function that counts the occurrence of specific values across specific columns
+count_value_byrow <- function(data, start_part, list, newname){
+  newframe <- data.frame(matrix(ncol = 1, nrow = nrow(data)))
+  for (i in 1:length(list)){
+    val_to_count <- list[i]
+    frame <- 
+    data %>%
+      mutate(
+        name = 
+          rowSums(
+            dplyr::select(.,
+                   starts_with(start_part)) == val_to_count,
+                    na.rm = T
+          )
+      ) |> dplyr::select(name)
+    newframe <- cbind(newframe, frame)
+    colnames(newframe)[i+1] <- paste0("SSSSS_", i)
+  }
+  newframe <- 
+    newframe |> 
+    mutate(
+      sum.val =
+        rowSums(across(2:(i+1)), na.rm = T)
+    )
+  
+  data <- cbind(data, newframe$sum.val)
+  colnames(data)[which(colnames(data) == "newframe$sum.val")] <- newname
+   return(data)
+}
+
+#example
+# high_level <- c(
+#           "High detail (read the whole forecast)",
+#           "High detail(e,g., read text forecast, checked radar or windy.com)",
+#           "High detail(read several observations for the area in detail)",
+#           "High detail(e.g., about distribution and reactiveness of weak layer)",
+#           "High detail (own snow and weather analysis)")
+# 
+# count_value_byrow(kfc_all, "info", c(
+#           "High detail (read the whole forecast)",
+#           "High detail(e,g., read text forecast, checked radar or windy.com)",
+#           "High detail(read several observations for the area in detail)",
+#           "High detail(e.g., about distribution and reactiveness of weak layer)",
+#           "High detail (own snow and weather analysis)"), "new") |> 
+#   dplyr::select(173)
+
+```
+
+```{r eval = F}
+# FIXME: the function in this chunk is not in use any more. Skip it. 
+#this function pull the unique value from multiple-choice columns
+pull_value <- function(
+    data, #a data containing the multiple-choice question (mcq) as multiple cols
+    value_starts, #overlapped starting part for the names of the mcq cols 
+    value_to_remove = "-99" #the value that does not count as a "presence", except for NA
+    ){
+  unique_values <- 
+    data |> dplyr::select(starts_with(value_starts)) |> 
+    map(unique) |> 
+    unlist() |> 
+    replace_na(value_to_remove) |> 
+    stringr::str_remove(value_to_remove) 
+    unique_values |> unique(unique_values[unique_values != ""])
+}
+#an example
+#f_present_true <- pull_value(kfc, "f_present", "-99") 
+#multi.table(kfc |> dplyr::select(starts_with("f_pr")), true.codes = f_present_true)
+```
+
+```{r}
+#an example of cross multi-choice table
+
+# cross.multi.table(kfc |> dplyr::select(starts_with("f_pr")), 
+#                   crossvar = as.factor(kfc[,"danger_high_est"]), 
+#                   true.codes = f_present_true,
+#                   na.rm = T)
+```
+
+```{r eval = F}
+# FIXME: the function in this chunk is not in use any more. Skip it. 
+# a function that takes the value of a table generated by multi.table or cross.multi.table
+# and replace the variable name with the interpret-able name
+
+goodname <- 
+  function(
+    table, #a table generated by multi.table or its variants
+    data,  # the original data-set containing the multi-choice cols
+    value_starts # the overlapped starting part of the col names
+    ){
+  for (i in 1: nrow(table)){
+  n <-  which(rownames(table)[i] == 
+                colnames(data |> dplyr::select(starts_with(value_starts))))
+  name <- (str_split_1(var_label((data |> dplyr::select(starts_with(value_starts)))[,n]),
+                       pattern = "-"))[2]
+  rownames(table)[i] <- name}
+  return(table)
+  }
+
+# #an example
+# table_f_present <- cross.multi.table(kfc |> dplyr::select(starts_with("f_pr")), 
+#                   crossvar = as.factor(kfc[,"danger_high_est"]), 
+#                   true.codes = f_present_true,
+#                   na.rm = T)
+# goodname(table_f_present, kfc, "f_present")
+# 
+# #another example
+# f_critical_true <- pull_value(kfc, "f_cri", "-99")
+# table_f_critical <- cross.multi.table(kfc |> dplyr::select(starts_with("f_cri")), 
+#                   crossvar = as.factor(kfc[,"danger_high_est"]), 
+#                   true.codes = f_critical_true,
+#                   na.rm = T)
+```
+
+## Variables with discrete values
+
+### single choice variables with discreate values
+
+Variables with discrete values were described as below. Note that the values were ordered according to their counts.
+
+```{r fig.height= 7, fig.width= 12}
+name.lab <- c("Mountain",
+              "Date",
+              "Parking lot",
+              "Beacon check",
+              "Make any decision?",
+              "Decision"
+              )
+  
+names(name.lab) <-  
+  c(
+    "mountain",
+    "date_label",
+    "parking",
+    "beacon",
+    "dp_dic",
+    "decision"
+    )
+
+kfc |> 
+  dplyr::select(
+    mountain,
+    date_label,
+    parking,
+    beacon,
+    dp_dic,
+    decision
+  ) |> 
+  pivot_longer(
+    everything(),
+    names_to = "variable",
+    values_to = "value"
+  ) |> 
+  naniar::replace_with_na_all(~.x ==  "-99") |> 
+  add_count(variable, value) |> 
+  na.omit() |> 
+  ggplot(aes(x = fct_reorder(value, n)), fill = "white") +
+  geom_bar(stat = "count", color = "black", fill = "white") +
+  #scale_fill_brewer("blue") +
+  labs(
+    y = "",
+    x = "",
+    title = "Distribution of single-choice variables with discrete levels"
+  )+
+  geom_text(stat = "count", aes(label = ..count..), hjust = 1.1) +
+  facet_wrap(~variable, scales = "free", labeller = labeller(variable = name.lab))+
+  coord_flip()+
+  scale_x_discrete(labels = scales::label_wrap(25))+
+  theme (
+    legend.position = "none",
+    axis.text = element_text( size = 12, face = "bold", vjust = 0.5),
+    axis.text.x = element_text(size = 10),
+    panel.background = element_rect(fill = "white", color = "black"),
+    plot.title = element_text(family = "Palatino", size = 14, face = "bold"),
+    strip.background = element_rect(color = "black", fill = "wheat"),
+    strip.text = element_text(size = 12, face = "bold", family = "Palatino")
+  ) 
+
+```
+
+Note for the plot above: 
+
+**a.** Eighty-one percent of the respondent did beacon check.
+
+**b.**Around half of the participants responded at week 1 of the study.
+
+**c.**Around 85% of the participants made the decision to ski at the critical slope.
+
+**d.** Eighty-six percent of the respondents made risk assessment or came from a group with risk assessment
+
+### decisions
+
+The question went as below/
+
+```{r}
+lab$decision
+```
+
+Below is the distribution of the choices of this question.
+
+```{r fig.width= 12, fig.height= 6}
+kfc |> 
+  dplyr::select(
+    decision
+  )|> 
+  naniar::replace_with_na_all(~.x ==  "-99") |> 
+  na.omit() |> 
+  mutate(ifski = 
+           case_when(
+             decision %in% c("To ascend and descend the slope",
+                             "To descend the slope",
+                             "To ascend the slope") ~ "ski",
+             decision %in% c("To refrain from ascending or descending the slope",
+                             "Started to descend but turned around",
+                             "Started to ascend but turned around") ~"no ski",
+             TRUE~as.character(NA)
+             )
+  ) |> 
+  ggplot(aes(x = decision)) +
+  geom_bar(stat = "count", color = "black", aes(fill = ifski)) +
+  scale_fill_manual(values = c("darkred", "lightgreen")) +
+  labs(
+    y = "Count",
+    x = "",
+    title = "Distribution of decisions"
+  )+
+  guides(fill = guide_legend(title = "If deciding to ski"))+
+  theme (
+    legend.position = c(0.9,0.9),
+    axis.text = element_text( size = 11, vjust = 0.5),
+    panel.background = element_rect(fill = "white", color = "black"),
+    plot.title = element_text(family = "Palatino", size = 14, face = "bold")
+  ) +
+  coord_flip()+
+  geom_text(stat = "count", aes(label = ..count..), hjust = -0.2) +
+  ylim(c(0,87))
+```
+
+Note for the plot above: 
+
+**a.** Most skiers decided to ski the critical slope.
+
+**b.** Among skiers decided not to ski the critical slope, a substantial proportion refrained from skiing at the first place.
+
+**c.** Among skiers decided to ski the critical slope, half ascended and descended the the slope. 
+
+## Variables with ordianl values (Explanatory)
+
+Variables with ordinal. Their choices by the respondents were distributed as below. The orderings of their values were kept in the plot. 
+
+### Demographics
+
+```{r}
+kfc |> 
+  filter(!is.na(email_cp)) |> 
+  dplyr::select(
+    email_cp,
+    age,
+    bc_days,
+    bc_years,
+    skill_avi,
+    edu_highest
+  ) 
+```
+
+```{r}
+# is.na(kfc$bc_days)
+# "TRUE" %in% str_detect(c2022$email, regex('Sigleitstrand', ignore_case = T)) 
+# "TRUE" %in% str_detect(c2023$email, regex('eirroleng', ignore_case = T)) 
+```
+
+```{r}
+ff_glimpse(
+  kfc |> 
+    dplyr::select(
+      bc_days, 
+      bc_years, 
+      skill_avi, 
+      edu_highest
+      )
+  )
+```
+
+```{r}
+fig.bc_days <- 
+  kfc |> 
+  dplyr::select(
+    bc_days 
+  )|> 
+  naniar::replace_with_na_all(~.x ==  "-99") |> 
+  na.omit() |> 
+  ggplot(aes(x = bc_days, 
+             fill = factor(bc_days))) +
+  geom_bar(stat = "count", color = "black", fill = "steelblue") +
+  #scale_fill_brewer("blue") +
+  labs(
+    y = "Count",
+    x = "",
+    title = "Back country days"
+  )+
+  theme (
+    legend.position = "none",
+    axis.text.x = element_text(angle = 45, size = 10, vjust = 0.5),
+    panel.background = element_rect(fill = "white", color = "black"),
+    plot.title = element_text(family = "Palatino", size = 14, face = "bold")
+  )+
+  scale_x_discrete(label = scales::label_wrap(15))+
+  geom_text(stat = "count", aes(label = ..count..), vjust = -0.3)+
+  ylim(c(0,40))
+```
+
+```{r}
+fig.bc_years <- 
+  kfc |> 
+  dplyr::select(
+    bc_years 
+  )|> 
+  naniar::replace_with_na_all(~.x ==  "-99") |> 
+  na.omit() |> 
+  ggplot(aes(x = bc_years, 
+             fill = factor(bc_years))) +
+  geom_bar(stat = "count", color = "black", fill = "steelblue") +
+  #scale_fill_brewer("blue") +
+  labs(
+    y = "Count",
+    x = "",
+    title = "Back country years"
+  )+
+  theme (
+    legend.position = "none",
+    axis.text.x = element_text(angle = 45, size = 10, vjust = 0.5),
+    panel.background = element_rect(fill = "white", color = "black"),
+    plot.title = element_text(family = "Palatino", size = 14, face = "bold")
+  )+
+  scale_x_discrete(label = scales::label_wrap(15))+
+  geom_text(stat = "count", aes(label = ..count..), vjust = -0.3)+
+  ylim(c(0,40))
+```
+
+```{r}
+fig.skill_avi <- 
+  kfc |> 
+  dplyr::select(
+    skill_avi 
+  )|> 
+  naniar::replace_with_na_all(~.x ==  "-99") |> 
+  na.omit() |> 
+  ggplot(aes(x = skill_avi, 
+             fill = factor(skill_avi))) +
+  geom_bar(stat = "count", color = "black", fill = "steelblue") +
+  #scale_fill_brewer("blue") +
+  labs(
+    y = "Count",
+    x = "",
+    title = "Assessment skill"
+  )+
+  theme (
+    legend.position = "none",
+    axis.text.x = element_text(angle = 0, size = 10),
+    panel.background = element_rect(fill = "white", color = "black"),
+    plot.title = element_text(family = "Palatino", size = 14, face = "bold")
+  )+
+  scale_x_discrete(label = scales::label_wrap(15))+
+  geom_text(stat = "count", aes(label = ..count..), vjust = -0.3)+
+  ylim(c(0,50))
+fig.skill_avi
+```
+
+```{r}
+fig.edu_highest <- 
+  kfc |> 
+  dplyr::select(
+    edu_highest 
+  )|> 
+  mutate(
+    edu_highest = factor(
+      kfc$edu_highest, 
+      ordered = T,
+      levels = c(
+        "None", 
+        "Basic", 
+        "Advanced",
+        "Professional"
+      )
+    )
+  ) |> 
+  naniar::replace_with_na_all(~.x ==  "-99") |> 
+  na.omit() |> 
+  ggplot(aes(x = edu_highest, 
+             fill = factor(edu_highest))) +
+  geom_bar(stat = "count", color = "black", fill = "steelblue") +
+  #scale_fill_brewer("blue") +
+  labs(
+    y = "Count",
+    x = "",
+    title = "Highest avalanche education"
+  )+
+  theme (
+    legend.position = "none",
+    axis.text.x = element_text(angle = 0, size = 10),
+    panel.background = element_rect(fill = "white", color = "black"),
+    plot.title = element_text(family = "Palatino", size = 14, face = "bold")
+  )+
+  scale_x_discrete(label = scales::label_wrap(15))+
+  geom_text(stat = "count", aes(label = ..count..), vjust = -0.3)+
+  ylim(c(0,50))
+```
+
+```{r, fig.height=8, fig.width=10}
+fig.bc_days/fig.bc_years|fig.skill_avi/fig.edu_highest
+```
+
+```{r}
+kfc |> 
+  dplyr::select(
+    age
+  ) |> 
+  ggplot(aes(x = age)) +
+  geom_histogram(binwidth = 10, fill = "steelblue", color = "black") +
+  labs(
+    title = "Distribution of age"
+  ) +
+  theme(
+    panel.background = element_rect(fill = "white", color = "black"),
+  )
+```
+
+### Group size
+
+The question goes:
+
+```{r}
+lab$n_people
+```
+
+The choices were distributed as follow:
+
+```{r}
+kfc |> 
+  filter(!is.na(group_nr)) |> 
+  group_by(group_nr) |> 
+  summarise(group_size = mean(n_people)) |> 
+  filter(group_size == round(group_size, 0)) |> 
+  group_by(group_size) |> 
+  summarise(n = n()) |> 
+  ggplot(aes(x= group_size, y = n)) +
+  geom_col(color = "black", size  = 1, fill = "steelblue") +
+  geom_text(aes(label = n), hjust = 0.5, vjust = -0.3)+
+  scale_fill_brewer("blue")+
+  labs(
+    x = "Group size", 
+       y = "Counts",
+       title = "Distribution of group size"
+    )+
+  scale_x_discrete(
+    limits = c(1,2,3,4,5,6,7), 
+    labels = c("1"="1 person", "2"="2 people", "3"="3 people", "4"="4 people", "5"="5 people", "6"="6 people", "7"="7 people"))+
+  theme(panel.background = element_rect(color = "black", fill = "white", size = 1.5),
+        axis.text.x = element_text(size = 10, angle = 0, vjust = 0.5)
+        ) +
+  ylim(c(0, 55))
+```
+
+Note for the plot above: 
+
+**a.** Most skiers skied in a group of two members. 
+
+**b.** Group size larger than five were very rare.
+
+**b.** There were a few people skiing alone.
+
+### SOCIAL
+
+SOCIAL section includes three questions generating ordinal answers: group dynamics; group establishment; and trust. Besides, another variable "Leader" is loosely ordinal (No→Yes,informal→Yes,Formal), and will be treated as discrete throughout the analysis, except for this descriptive section. 
+
+The questions went as:
+
+```{r}
+lab$soc_groupdyn; lab$trust; lab$soc_trust_1;lab$leader
+```
+
+
+```{r}
+fig.gd <- kfc |> 
+  dplyr::select(soc_groupdyn)|> 
+  naniar::replace_with_na_all(~.x ==  "-99") |> 
+  na.omit() |> 
+  ggplot(aes(x = factor(soc_groupdyn))) +
+  geom_bar(stat = "count", color = "black", fill = "steelblue") +
+  #scale_fill_brewer("blue") +
+  labs(
+    y = "Count",
+    x = "",
+    title = "Distribution of group dynamics"
+  )+
+  theme (
+    legend.position = "none",
+    axis.text.x = element_text(angle = 25, size = 10, vjust = 0.5),
+    panel.background = element_rect(fill = "white", color = "black"),
+    plot.title = element_text(family = "Palatino", size = 14, face = "bold")
+  )+
+  geom_text(stat = "count", aes(label = ..count..), vjust = -0.3)+
+  ylim(c(0,130))
+```
+
+
+```{r}
+fig.ge <- kfc |> 
+  dplyr::select(group_establish)|> 
+  naniar::replace_with_na_all(~.x ==  "-99") |> 
+  na.omit() |> 
+  ggplot(aes(x = factor(group_establish), fill = group_establish)) +
+  geom_bar(stat = "count", color = "black", fill ="steelblue") +
+  #scale_fill_brewer("blue") +
+  labs(
+    y = "Count",
+    x = "",
+    title = "Distribution of group establishment"
+  )+
+  theme (
+    legend.position = "none",
+    axis.text.x = element_text(angle = 0, size = 10, vjust = 0.5),
+    panel.background = element_rect(fill = "white", color = "black"),
+    plot.title = element_text(family = "Palatino", size = 14, face = "bold")
+  )+
+  geom_text(stat = "count", aes(label = ..count..), vjust = -0.3)+
+  ylim(c(0,130))
+```
+
+```{r}
+fig.trust <- kfc |> 
+  dplyr::select(trust)|> 
+  naniar::replace_with_na_all(~.x ==  "-99") |> 
+  na.omit() |> 
+  ggplot(aes(x = factor(trust), fill = factor(trust))) +
+  geom_bar(stat = "count", color = "black", fill = "steelblue") +
+  #scale_fill_brewer("blue") +
+  labs(
+    y = "Count",
+    x = "Level of trust (Larger = higer trust)",
+    title = "Distribution of trust"
+  )+
+  theme (
+    legend.position = "none",
+    axis.text.x = element_text(angle = 0, size = 10, vjust = 0.5),
+    axis.title.x = element_text(family = "Palatino", size  = 12),
+    panel.background = element_rect(fill = "white", color = "black"),
+    plot.title = element_text(family = "Palatino", size = 14, face = "bold")
+  )+
+  geom_text(stat = "count", aes(label = ..count..), vjust = -0.3)+
+  ylim(c(0,130))
+```
+
+```{r}
+fig.leader <- kfc |> 
+  dplyr::select(
+    leader 
+    )|> 
+  mutate(
+    leader = factor(
+        kfc$leader, 
+        ordered = T,
+        levels = c(
+          "Don't know", 
+          "No", 
+          "Yes - the group had an informal leader",
+          "Yes - the group had a formal leader (e.g., a guide or tour leader)"
+          )
+  )
+  ) |> 
+  naniar::replace_with_na_all(~.x ==  "-99") |> 
+  na.omit() |> 
+  ggplot(aes(x = leader, 
+        fill = factor(leader))) +
+  geom_bar(stat = "count", color = "black", fill = "steelblue") +
+  #scale_fill_brewer("blue") +
+  labs(
+    y = "Count",
+    x = "",
+    title = "If the group had a leader"
+  )+
+  theme (
+    legend.position = "none",
+    axis.text.x = element_text(angle = 0, size = 10),
+    panel.background = element_rect(fill = "white", color = "black"),
+    plot.title = element_text(family = "Palatino", size = 14, face = "bold")
+  )+
+  scale_x_discrete(label = scales::label_wrap(15))+
+  geom_text(stat = "count", aes(label = ..count..), vjust = -0.3)+
+  ylim(c(0,130))
+```
+
+The four SOCIAL variables' distribution were visualized as below. 
+
+```{r, fig.height=8, fig.width=10}
+fig.gd/fig.ge|fig.trust/fig.leader
+```
+
+Note for the plot above (group dynamics): 
+
+**a.** Most skiers reported extremely positive group dynamics.
+
+**b.** Only one skier reported negative group dynamics. It is either reflecting the truth, or due to social desirability bias. 
+
+Note for the plot above (group establishment): 
+
+**a.** Skiers from completely new group were not rare but few in number.
+
+**b.** More than 60% skiers are from established groups. 
+
+**b.** Possibly interesting to check: with-in group group establishment report consistency
+
+Note for the plot above (group trust): 
+
+**a.** Most skiers reported as high as 4 or 5 trust.
+
+**b.** Possibly interesting to check: with-in group trust report consistency
+
+Note for the plot above (leader): 
+
+**a.** There were a few people skiing alone.
+
+**b.** Possibly interesting to check: with-in group leader report consistency
+
+### Snow information collection frequency
+
+The question went as:
+
+```{r}
+lab$snow_freq
+```
+
+The variable's distribution was visualized as below. 
+
+```{r}
+kfc |> 
+  dplyr::select(snow_freq)|> 
+  naniar::replace_with_na_all(~.x ==  "-99") |> 
+  na.omit() |> 
+  ggplot(aes(x = factor(snow_freq), fill = factor(snow_freq))) +
+  geom_bar(stat = "count", color = "black", fill = "steelblue") +
+  #scale_fill_brewer("blue") +
+  labs(
+    y = "Count",
+    x = "",
+    title = "Snow information collection frequency"
+  )+
+  theme (
+    legend.position = "none",
+    axis.text.x = element_text(angle = 0, size = 10, family = "Palatino"),
+    panel.background = element_rect(fill = "white", color = "black"),
+    plot.title = element_text(family = "Palatino", size = 14, face = "bold")
+  )+
+  scale_x_discrete(label = scales::label_wrap(15))+
+  geom_text(stat = "count", aes(label = ..count..), vjust = -0.3)
+```
+
+Note for the plot above: 
+
+**a.** Values were roughly evenly distributed across four levels. 
+
+### Familiarity with the slope
+
+The question went as below:
+
+```{r}
+lab$n_trips
+```
+
+The distribution was visualized.
+
+```{r}
+kfc |> 
+  dplyr::select(
+    freq_trips
+  ) |> 
+  na.omit() |> 
+  ggplot(aes(x= freq_trips)) +
+  geom_bar(stat = "count", fill = "wheat", color = "black")+
+  geom_text(stat = "count", aes(label = ..count.., vjust = -0.5))
+```
+
+Note for the plot above: 
+
+**a.** More than half of the respondents skied the critical slope for the first time.
+
+## Variable with ordinal values (Dependent)
+
+The questions about avalanche likelihood estimates and confidence; self-reported outcome, and steepness estimate and error range. All of them are ordinal.
+
+### Size 1&2 likelihood estimates + the confidence in the estimates
+
+The questions went as:
+
+```{r}
+lab$avi_prob_number_1_1;lab$avi_prob_number_1_2;lab$avi_prob_number_2_1;lab$avi_prob_number_2_2
+```
+
+```{r}
+llh.fig <- kfc |> 
+  dplyr::select(
+    index,
+    likelihood_s1,
+    likelihood_s2
+  ) |> 
+  pivot_longer(!index, names_to = "variable", values_to = "value") |> 
+  na.omit() |> 
+  ggplot(aes(x = value, fill = value)) +
+  geom_bar(stat = "count", color = "black") +
+  geom_text(stat = "count", aes(label = ..count..), vjust = -0.5)+
+  scale_fill_brewer("blue") +
+  ylim(c(0, 130))+
+  labs(
+    y = "Count",
+    x = "",
+    title = "Distribution of Size 1 (small) and Size 2 \n(medium or larger) likelihood estimate"
+  )+
+  facet_wrap(~variable, ncol = 1) +
+  theme (
+    legend.position = "none",
+    axis.text.x = element_text(angle = 25, size = 10, vjust = 0.5),
+    panel.background = element_rect(fill = "white", color = "black"),
+    plot.title = element_text(family = "Palatino", size = 12, face = "bold"),
+    strip.background = element_rect(color = "black", fill = "wheat"),
+    strip.text = element_text(size = 10, face = "bold")
+  )
+```
+
+```{r}
+confi.fig <- kfc |> 
+  dplyr::select(
+    index,
+    confidence_s1,
+    confidence_s2
+  ) |> 
+  pivot_longer(!index, names_to = "variable", values_to = "value") |> 
+  na.omit() |> 
+  ggplot(aes(x = value, fill = value)) +
+  geom_bar(stat = "count", color = "black") +
+  geom_text(stat = "count", aes(label = ..count..), vjust = -0.5)+
+  scale_fill_brewer("blue") +
+  ylim(c(0, 130))+
+  labs(
+    y = "Count",
+    x = "",
+    title = "Distribution of Size 1 (small) and Size 2 \n(medium or larger) likelihood est confidence"
+  )+
+  facet_wrap(~variable, ncol = 1) +
+  theme (
+    legend.position = "none",
+    axis.text.x = element_text(angle = 25, size = 10, vjust = 0.5),
+    panel.background = element_rect(fill = "white", color = "black"),
+    plot.title = element_text(family = "Palatino", size = 12, face = "bold"),
+    strip.background = element_rect(color = "black", fill = "wheat"),
+    strip.text = element_text(size = 10, face = "bold")
+  )
+```
+
+The variable distributions were visualized as below. 
+
+```{r, fig.width= 8, fig.height= 6}
+llh.fig|confi.fig
+```
+
+Note for the plot above: 
+
+**a.** For size 1 avalanche, more respondents believed it was either unlikely or possible, with possible outnumbering unlikely.
+
+**b.** For size 2 avalanche, even more respondents believed it was either unlikely or possible. However, unlikely dominated by almost two time the number of possible.
+
+**c.** For the confidence in size 1 and 2 avalanche, the choices distributed roughly same, where most people had medium confidence, followed by high confidence. Very high and very low confidence were very few in number across the sizes. 
+
+### Confidence in steepness estimate
+
+The question went as:
+
+```{r}
+lab$r_dv_ci_2
+```
+
+The variable distribution was visualized as below. 
+
+```{r}
+kfc |> 
+  dplyr::select(steep_confi)|> 
+  naniar::replace_with_na_all(~.x ==  "-99") |> 
+  na.omit() |> 
+  ggplot(aes(x = steep_confi, fill = steep_confi)) +
+  geom_bar(stat = "count", color = "black") +
+  scale_fill_brewer("blue") +
+  geom_text(stat = "count", aes(label = ..count.., vjust = -1))+
+  labs(
+    y = "Count",
+    x = "",
+    title = "Distribution of confidence in steepness est."
+  )+
+  theme (
+    legend.position = "none",
+    axis.text.x = element_text(angle = 25, size = 10, vjust = 0.5),
+    panel.background = element_rect(fill = "white", color = "black"),
+    plot.title = element_text(family = "Palatino", size = 14, face = "bold")
+  )+
+  ylim(c(0,40))
+```
+
+Note for the plot above: 
+
+**a.** Around 80% of the respondents reported the ranges of +/-5, 4 or3 degrees.
+
+**b.** Around 50% of the respondents' confidence were on the high side: either +/-3 or +/2 degrees. 
+
+### Self-reported outcome
+
+The question went as:
+
+```{r}
+lab$outcome_dp;lab$outcome_nodm
+```
+
+```{r  fig.width= 8, fig.height =6}
+outcome_dm <- 
+  kfc |> 
+  dplyr::select(
+    index,
+    outcome_dp
+  ) |> 
+  naniar::replace_with_na_all(~.x ==  "-99") |> 
+  na.omit() |> 
+  ggplot(aes(x = outcome_dp, fill = outcome_dp)) +
+  geom_bar(stat = "count", color = "black") +
+  scale_fill_brewer("blue") +
+  labs(
+    y = "Count",
+    x = "",
+    title = "Distribution of outcome for decison makers"
+  )+
+  theme (
+    legend.position = "none",
+    axis.text = element_text(size = 12, vjust = 0.5),
+    panel.background = element_rect(fill = "white", color = "black"),
+    plot.title = element_text(family = "Palatino", size = 15, face = "bold")
+  ) +
+  scale_x_discrete(label = scales::label_wrap (40))+
+  coord_flip()+
+  geom_text(stat = "count", aes(label = ..count..), hjust = -0.3)+
+  ylim(c(0,160))
+
+```
+
+```{r  fig.width= 8, fig.height =3}
+outcome_ndm <- 
+  kfc |> 
+  dplyr::select(
+    index,
+    outcome_nodm
+  ) |> 
+  naniar::replace_with_na_all(~.x ==  "-99") |> 
+  na.omit() |> 
+  ggplot(aes(x = outcome_nodm, fill = outcome_nodm)) +
+  geom_bar(stat = "count", color = "black") +
+  scale_fill_brewer("blue") +
+  labs(
+    y = "Count",
+    x = "",
+    title = "Distribution of outcome for non-decison makers"
+  )+
+  theme (
+    legend.position = "none",
+    axis.text = element_text(size = 12, vjust = 0.5),
+    panel.background = element_rect(fill = "white", color = "black"),
+    plot.title = element_text(family = "Palatino", size = 15, face = "bold")
+  ) +
+  scale_x_discrete(label = scales::label_wrap (40))+
+  coord_flip()+
+  geom_text(stat = "count", aes(label = ..count..), hjust = -0.3)+
+  ylim(c(0,30))
+```
+
+The variable distribution was visualized as below. 
+
+```{r fig.width= 8, fig.height =5}
+outcome_dm/outcome_ndm
+```
+
+Note for the plot above: 
+
+**a.** Six respondents from decision-making group met real avalanche. None from non-decision making group reported coming across one.
+
+**b.** Around 1/4 of the respondents from decision-making group saw some instability.
+
+**c.** Around 1/5 of the respondents from non-decision-making group saw some instability.
+
+### Avalanche size
+
+When the respondents selected "The slope avalanched.." in the outcome question, they would see a question asking the size for the avalanche. It went as below
+
+```{r}
+lab$out_ava
+```
+
+The distribution was checked as below
+
+```{r}
+kfc |> 
+  dplyr::select(
+    index,
+    out_ava
+  ) |> 
+  naniar::replace_with_na_all(~.x ==  "-99") |> 
+  na.omit() |> 
+  ggplot(aes(x = out_ava, fill = out_ava)) +
+  geom_bar(stat = "count", color = "black") +
+  scale_fill_brewer("blue") +
+  labs(
+    y = "Count",
+    x = "",
+    title = "Distribution of outcome for non-decison makers"
+  )+
+  theme (
+    legend.position = "none",
+    axis.text = element_text(size = 12, vjust = 0.5),
+    panel.background = element_rect(fill = "white", color = "black"),
+    plot.title = element_text(family = "Palatino", size = 15, face = "bold")
+  ) +
+  coord_flip()+
+  geom_text(stat = "count", aes(label = ..count..), hjust = -0.3)
+```
+
+# Distribution of multiple choice variables
+
+## Prior information
+
+Here is an example question in this question set:
+
+```{r}
+lab$info_prior_1
+```
+```{r}
+info_tab <- 
+kfc |> 
+  dplyr::select(
+    index, 
+    starts_with("info_")
+    ) |> 
+  pivot_longer(
+    !index,
+    names_to = "variables",
+    values_to = "detail"
+  ) |> 
+  group_by(variables, detail) |> 
+  summarise (n = n()) |> 
+  na.omit(detail)
+```
+
+The variable distribution was visualized as below. 
+
+```{r, fig.width= 8, fig.height=6}
+info_tab |> 
+  ggplot(aes(x = detail, y = variables))+
+  geom_point(aes(size = n), fill = "wheat", shape = 21, stroke = 1) +
+  geom_text(aes(label = n)) +
+  scale_size_continuous(range = c(6, 25))+
+  guides(size = guide_legend(title = "Number of choices"))+
+  labs(
+    x = "Detail Levels", 
+    y = "Prior Information",
+    title = "Figure 1. Distribution of level of details for each prior information used")+
+  theme(
+    plot.title = element_text(size = 14, family = "Times New Roman"),
+    panel.background = element_rect(color = "black", fill = "gray"),
+    axis.text = element_text(size = 10)
+    #panel.grid.major = element_blank()
+  )
+```
+
+Note for the plot above: 
+
+**a.** Respondents who did not check weather forecast and avalanche forecast were very few in number.
+
+**b.** A slightly more than half of the respondents would check avalanche forecast in high detail. For all the other prior information, there was always more people checking in low detail than in high detail. 
+
+**c.** Around 1/2 to 1/4 respondents did not check the following information, respectively: "Talked to people with knowledge about the local avalanche conditions",  "Own tracking of local snow and weather history", or "RegObs".
+
+**d.** More people tend to check higher detail in avalanche forecast.
+
+**e.** More people tend to check lower detail in RegObs
+
+## Snow interpret 
+
+Here is an example question in this question set:
+
+```{r}
+lab$snow_interpret_3
+```
+
+```{r}
+limits <-  kfc |> 
+  dplyr::select(starts_with("snow_inter")) |> names()
+labels <-  c(
+  "None of these factors",
+    "Presence of avalanche activity",
+    "Absence of avalanche activity",
+    "Presence of whumpf(s)",
+    "Absence of whumpf(s)",
+    "Presence of shooting cracks",
+    "Absence of shooting cracks",
+    "Presence of drum-like sounds",
+    "Absence of drum-like sounds",
+    "Recent ski tracks",
+    "Regularly and often skied" ,
+    "Visual cues of wind affected snow",
+    "Wind speed",
+    "Amount wind loaded snow",
+    "Amount of new snow",
+    "Amount of rain",
+    "Rapid warming",
+    "Temperature last 24h or 72h",
+    "Solar radiation during tour",
+    "Slab hardness",
+    "Hardness difference bt layers",
+    "Hardness of underlying snow",
+    "Failure plane shear quality" ,
+    "Weak layer dist. from surface",
+    "Weak layer thickness",
+    "Weak layer grain type",
+    "Grain size in weak layer",
+    "stability tests"
+  )
+```
+
+
+```{r, fig.height=12}
+snow.n.fig <- kfc |> 
+  dplyr::select(
+    index,
+    starts_with("af_")
+  ) |> 
+  naniar::replace_with_na_all(~.x == "-99") |> 
+  pivot_longer(
+    !index,
+    names_to = "factor",
+    values_to = "selected",
+    values_drop_na = TRUE
+  ) |> 
+  na.omit() |> 
+  ggplot(aes(x= selected)) +
+  geom_bar(fill = "wheat", stat = "count",  color = "black") +
+  coord_flip()+
+  geom_text(stat = "count", aes(label = ..count..), hjust = -0.5)+
+  #scale_fill_manual(values = colfunc(28))
+  labs(x= "", y = "Counts", title = "How many times each factor was selected \n(Correspond to the left-hand plot by row)")+
+  theme(plot.background = element_rect(fill = "white", color = "white"),
+        panel.background = element_rect(color = "white", fill = "gray"),
+        panel.grid.minor.x  = element_blank(), 
+        legend.position = "none",
+        axis.text.y = element_blank(),
+        legend.text = element_text(size = 10),
+        axis.title.x = element_text (size = 12),
+        plot.title = element_text(size = 14, family = "Palatino", face = "bold"),
+        )+
+  guides(fill = guide_legend(title = "High danger ava likelihood \nest. confidence"))
+```
+
+
+```{r}
+interpret_tab <- 
+kfc |> 
+  dplyr::select(
+    index, 
+    starts_with("snow_interpret")
+    ) |> 
+  pivot_longer(
+    !index,
+    names_to = "variables",
+    values_to = "effect"
+  ) |> 
+  group_by(variables, effect) |> 
+  summarise (n = n()) |> 
+  na.omit(effect)
+```
+
+```{r, fig.width= 15, fig.height=12}
+interpret.tab.fig <- 
+interpret_tab |> 
+  ggplot(aes(x = effect, y = variables))+
+  geom_point(aes(size = n), fill = "wheat", shape = 21, stroke = 1) +
+  geom_text(aes(label = n)) +
+  scale_size_continuous(range = c(6, 25))+
+  guides(size = guide_legend(title = "Number of choices"))+
+  labs(
+    x = "Effect", 
+    y = "Snow factors",
+    title = "Distribution of effect on assessement for each snow factor \nselected",
+    caption = "Row total of the left-hand plot can be smaller the counts shown on the right-hand plot, \nsince some respondents selected a factor but did not report its effect on assessment"
+      )+
+  scale_y_discrete(limits = limits, label = labels)+
+  #scale_fill_manual(values = colfunc(28))+
+  theme(
+    plot.title = element_text(size = 14, family = "Palatino", face = "bold"),
+    panel.background = element_rect(color = "white", fill = "gray"),
+    axis.text.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12),
+    legend.position = "left",
+    plot.caption = element_text(color = "red", size = 10),
+    plot.caption.position = "plot"
+    #panel.grid.major = element_blank()
+  )
+
+```
+
+The variable distribution was visualized as below (left). Plot on the right is the total counts of the factor being selected. Two plots correspond by row. Note that row total of the left-hand plot can be smaller the counts shown on the right-hand plot, since some respondents selected a factor but did not report its effect on assessment.
+
+```{r, fig.width= 15, fig.height=12}
+interpret.tab.fig|snow.n.fig
+```
+
+Note for the plot above: 
+
+**a.** The most frequently used snow factor "solar radiation" was more often interpreted as showing increased risk.
+
+**b.** More of the other highly used snow factors (freq > 60) were more often interpreted as showing decreased risk.
+
+**c.** A substantial proportion of the less often used snow factors (freq < 30) were more often interpreted as showing increased risk.
+
+## All avalanche factors (snow, terrain, group)
+
+Below is the number of times each factor was selected in the data. 
+
+```{r fig.height= 9, fig.width=10}
+kfc |> 
+  dplyr::select(
+    index,
+    starts_with("af_"),
+    starts_with("t_f"),
+    starts_with("g_f")
+  ) |> 
+  pivot_longer(
+    !index, 
+    names_to = "name", 
+    values_to = "value", 
+    values_drop_na = T
+    ) |> 
+  filter(value != -99) |> 
+  mutate(
+    type = case_when(
+      str_detect(name, "^af_.*")~"Snow factor",
+      str_detect(name, "^t_f.*")~"Terrain factor",
+      TRUE~"Group factor"
+    ) 
+  ) |> 
+  mutate(
+    value = ifelse(
+      type == "Snow factor",
+      paste0("(Snow)", value),
+      ifelse(
+        type == "Terrain factor",
+        paste0("(Terrain)", value),
+        paste0("(Group)", value)
+      )
+    )
+  )|> ggplot(
+    aes(x = fct_rev(fct_infreq(value)), 
+        fill = type)
+  ) +
+  geom_bar(
+    stat = "count",
+    #fill = "#9999CC",
+    color = "black")+
+  scale_fill_manual(values = c("#9999CC", "snow", "darkorange4"))+
+  theme(
+    panel.background = element_rect(color = "black", fill = "white"),
+    panel.grid.major.x = element_line(color = "grey", linetype = 2),
+    plot.title = element_text(face = "bold", size = 15),
+    axis.text.y = element_text (size = 10),
+    legend.position = c(0.80, 0.1),
+    legend.text = element_text(size = 14),
+    legend.title = element_text(size = 18, family = "Palatino", face = "bold")
+  )+
+  geom_text(stat = "count", aes(label = ..count..), hjust = -0.1)+
+  coord_flip()+
+  labs(
+    y = "",
+    x = "",
+    title = "Avalanche factors selected frequency",
+    fill = "TYPE of factor"
+  )
+```
+
+Note for the plot above: 
+
+**a.** Some terrain factors were most often used;
+
+**b.** Respondents very rarely sought for the presence of ...;
+
+**c.** Respondents often sought for the absence of ...;
+
+**d.** For snow factors, respondents more often sought for bull's eye cues instead of more professional information such as formal tests.
+
+**e** Very small number of respondents did not know/use snow/terrain/group factors. 
+
+### Reasons to ski/notski
+
+Here is examples question in this question set:
+
+```{r}
+lab$why_ski_2; lab$why_notski_2
+```
+
+
+```{r fig.width= 8, fig.height =8}
+yski.fig <- 
+kfc |> 
+  dplyr::select(
+    index,
+    starts_with("yski")
+  ) |> 
+  pivot_longer(
+    !index, 
+    names_to = "name", 
+    values_to = "value", 
+    values_drop_na = T
+    ) |> 
+  filter(value != "-99")  |> 
+  ggplot(
+    aes(x = fct_rev(fct_infreq(value)))
+  ) +
+  geom_bar(
+    stat = "count",
+    fill = "wheat",
+    color = "black")+
+  scale_fill_manual(values = c("#9999CC", "snow", "darkorange4"))+
+  theme(
+    panel.background = element_rect(color = "black", fill = "white"),
+    panel.grid.major.x = element_line(color = "grey", linetype = 2),
+    plot.title = element_text(face = "bold", size = 15),
+    axis.text.y = element_text (size = 10),
+    legend.position = c(0.80, 0.1),
+    legend.text = element_text(size = 14),
+    legend.title = element_text(size = 18, family = "Palatino", face = "bold")
+  )+
+  scale_x_discrete(labels = scales::label_wrap(40))+
+  geom_text(stat = "count", aes(label = ..count..), hjust = -0.1)+
+  labs(
+    y = "Counts",
+    x = "",
+    title = "Reasons to ski frequency",
+    fill = "TYPE of factor"
+  )+
+  coord_flip() 
+```
+
+```{r}
+ynski.fig <- 
+kfc |> 
+  dplyr::select(
+    index,
+    starts_with("ynski")
+  ) |> 
+  pivot_longer(
+    !index, 
+    names_to = "name", 
+    values_to = "value", 
+    values_drop_na = T
+    ) |> 
+  filter(value != "-99")  |> 
+  ggplot(
+    aes(x = fct_rev(fct_infreq(value)))
+  ) +
+  geom_bar(
+    stat = "count",
+    fill = "wheat",
+    color = "black")+
+  scale_fill_manual(values = c("#9999CC", "snow", "darkorange4"))+
+  theme(
+    panel.background = element_rect(color = "black", fill = "white"),
+    panel.grid.major.x = element_line(color = "grey", linetype = 2),
+    plot.title = element_text(face = "bold", size = 15),
+    axis.text.y = element_text (size = 10),
+    legend.position = c(0.80, 0.1),
+    legend.text = element_text(size = 14),
+    legend.title = element_text(size = 18, family = "Palatino", face = "bold")
+  )+
+  scale_x_discrete(labels = scales::label_wrap(40))+
+  geom_text(stat = "count", aes(label = ..count..), hjust = -0.1)+
+  labs(
+    y = "Counts",
+    x = "",
+    title = "Reasons not to ski frequency",
+    fill = "TYPE of factor"
+  )+
+  coord_flip() 
+```
+
+The variable distributions were visualized as below. 
+
+```{r fig.width= 8, fig.height =8}
+yski.fig/ynski.fig
+```
+
+Note for the plot above: 
+
+**a.** For those who decided to ski, most of them made the decision because of the confidence getting from snow or terrain factors.
+
+**b.** For those who decided to not ski, half of them made the decision because the information they collected from snow or terrain factors indicated not to ski.
+
+**c.** There are very few (but not none) respondents who decided to ski/not-ski regardless of the conditions.  
+
+# Cross-tabulating two variables that theretically relate to each other. 
+
+Some of the variables might influence the distribution of other variables according to sense-making. Here I visualized some of variable of this type that I can come up with. 
+
+## Detail level of info_prior used and confidence in high risk avalanche estimate
+
+Does checking some prior information add to the confidence in the avalanche estimate (low and high danger avalanche, respectively)?
+
+```{r}
+info_tab_byhi <- 
+kfc |> 
+  dplyr::select(
+    index, 
+    starts_with("info_"),
+    risk_hi_confi_2
+    ) |> 
+  pivot_longer(
+    !c(index,risk_hi_confi_2),
+    names_to = "variables",
+    values_to = "detail"
+  ) |> 
+  group_by(variables, detail, risk_hi_confi_2) |> 
+  summarise (n = n()) |> 
+  na.omit(detail)
+
+info_tab_bylow <- 
+kfc |> 
+  dplyr::select(
+    index, 
+    starts_with("info_"),
+    risk_low_confi_2
+    ) |> 
+  pivot_longer(
+    !c(index,risk_low_confi_2),
+    names_to = "variables",
+    values_to = "detail"
+  ) |> 
+  group_by(variables, detail, risk_low_confi_2) |> 
+  summarise (n = n()) |> 
+  na.omit(detail)
+```
+
+Below is for the high danger avalanche. 
+
+```{r, fig.width= 8, fig.height=6}
+confi.name <- c("Confidence in high danger ava est. \n Medium to very low",
+                "Confidence in high danger ava est. \n High to very high")
+
+names(confi.name) <- c("Medium to very low", "High to very high")
+info_tab_byhi |> 
+  ggplot(aes(x = detail, y = variables))+
+  geom_point(aes(size = n), fill = "wheat", shape = 21, stroke = 1) +
+  facet_wrap("risk_hi_confi_2", labeller = labeller(risk_hi_confi_2 = confi.name))+
+  geom_text(aes(label = n)) +
+  scale_size_continuous(range = c(6, 25))+
+  guides(size = guide_legend(title = "Number of choices"))+
+  labs(
+    x = "Detail Levels", 
+    y = "Prior Information",
+    title = "Figure. Distribution of number of prior information used \nby confidence in high danger avalanche estimates and level of details ")+
+  theme(
+    plot.title = element_text(size = 14, family = "Palatino", face = "bold"),
+    panel.background = element_rect(color = "black", fill = "gray"),
+    strip.background = element_rect(color = "black", fill = "wheat"),
+    axis.text = element_text(size = 10)
+    #panel.grid.major = element_blank()
+  )
+```
+
+Note for the plot above: 
+
+**a.** Respondents with high to very high confidence (in **HIGH** danger avalanche estimate) checked weather forecast more often in high detail comparing to those with low confidence. (high detail weather forecast checking gave some confidence?)
+
+**b.** Respondents with high to very high confidence (in **HIGH** danger avalanche estimate) talked to knowledgeable people less often in high detail comparing to those who had low confidence. (Confident skiers do not ask for information from others)?
+
+**c.** Respondents with high to very high confidence (in **HIGH** danger avalanche estimate) checked RegObs more often in high detail than those with low confidence did. 
+
+**d.** Respondents with high to very high confidence (in **HIGH** danger avalanche estimate) checked own tracking of local snow and weather history in high detail more often those with low confidence did. 
+
+**e.** Respondents with low to very high confidence (in **HIGH** danger avalanche estimate) checked avalanche forecast more often in high detail than those with low confidence did. 
+
+Below is for the low danger avalanche. 
+
+```{r, fig.width= 8, fig.height=6}
+confi.name <- c("Confidence in low danger ava est. \n Medium to very low",
+                "Confidence in low danger ava est. \n High to very high")
+
+names(confi.name) <- c("Medium to very low", "High to very high")
+info_tab_bylow |> 
+  ggplot(aes(x = detail, y = variables))+
+  geom_point(aes(size = n), fill = "wheat", shape = 21, stroke = 1) +
+  facet_wrap("risk_low_confi_2", labeller = labeller(risk_low_confi_2 = confi.name))+
+  geom_text(aes(label = n)) +
+  scale_size_continuous(range = c(6, 25))+
+  guides(size = guide_legend(title = "Number of choices"))+
+  labs(
+    x = "Detail Levels", 
+    y = "Prior Information",
+    title = "Figure. Distribution of number of prior information used \nby confidence in low danger avalanche estimates and level of details")+
+  theme(
+    plot.title = element_text(size = 14, family = "Palatino", face = "bold"),
+    panel.background = element_rect(color = "black", fill = "gray"),
+    strip.background = element_rect(color = "black", fill = "wheat"),
+    axis.text = element_text(size = 10)
+    #panel.grid.major = element_blank()
+  )
+```
+
+Note for the plot above: 
+
+**a.** Respondents with high to very high confidence (in **LOW** danger avalanche estimate) checked weather forecast more often in high detail comparing to those with low confidence. (high detail weather forecast checking gave some confidence?)
+
+**b.** Respondents with high to very high confidence (in **LOW** danger avalanche estimate) talked to knowledgeable people more often in high detail comparing to those having low confidence. (Confident skiers do not ask for information from others)?
+
+**c.** Respondents with high to very high confidence (in **LOW** danger avalanche estimate) checked RegObs more often in high detail than those with low confidence did. 
+
+**d.** Respondents with high to very high confidence (in **LOW** danger avalanche estimate) checked own tracking of local snow and weather history in high detail more often those with low confidence did. 
+
+**e.** Respondents with low to very high confidence (in **LOW** danger avalanche estimate) checked avalanche forecast more often in high detail than those with low confidence did. 
+
+## beacon checking behavior with SOCIAL
+
+Good group dynamics or well-established group might better ensure the beacon checking behavior. Beacon checking behavior might improve skier's trust to his group members. 
+
+```{r}
+#FIXME: this pie chart is not in use anymore
+# single pie chart
+# kfc |> 
+#   dplyr::select(
+#     beacon,
+#     edu_highest
+#   ) |> 
+#   naniar::replace_with_na_all(~.x == -99) |> 
+#   na.omit() |>
+#   ggplot(aes(x = "", y = beacon, fill = beacon, color = beacon)) +
+#   geom_bar(stat = "identity", size = 0) +
+#   coord_polar("y", start = 0)+
+#   scale_fill_brewer("blues")+
+#   scale_color_brewer("blues")+
+#   #facet_wrap(~edu_highest)+
+#   theme_minimal()+
+#   guides(fill = guide_legend(title = ""),
+#          color = guide_legend(title = ""))+
+#   theme(
+#     axis.text.x = element_blank(),
+#     ) +
+#   labs(title = "distribution of beacon check behavior")
+```
+
+```{r}
+strip.name <- c(
+          #"trust level 2",
+          "trust level 3",
+          "trust level 4",
+          "trust level 5")
+names(strip.name) <- c(
+  #"2", 
+  "3", "4", "5")
+beacon_bytrust <- kfc |> 
+  dplyr::select(
+    beacon,
+    trust
+  ) |> 
+  #mutate(soc_trust_1 = as.character(soc_trust_1)) |> 
+  naniar::replace_with_na_all(~.x == -99) |> 
+  filter(trust != 2) |> 
+  na.omit() |>
+  group_by(beacon, trust) |> 
+  summarise(freq = as.numeric(n())) |> 
+  ungroup() |> 
+  add_count(trust, wt = freq) |> 
+  mutate(percentage = freq/n) |> 
+  ggplot(aes(x = "", y = percentage, fill = beacon)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar("y", start = 0)+
+  scale_fill_brewer("blues")+
+  #geom_text(aes())
+  facet_wrap(~trust, labeller = labeller(trust = strip.name))+
+  theme_minimal()+
+  guides(fill = guide_legend(title = ""),
+         color = guide_legend(title = ""))+
+  labs(title = "Figure1. distribution of beacon check behavior by trust",
+       x = "",
+       y = "",
+       caption = lab$trust)+
+  theme(
+    axis.text.x = element_blank(),
+    legend.position = "bottom",
+    plot.caption = element_text(hjust = 0.5),
+    plot.title = element_text(hjust = 0.5, family = "Palatino", face = "bold"),
+    plot.background = element_rect(fill = "gray")
+    ) 
+```
+
+```{r}
+# strip.name <- c("trust level 2",
+#           "trust level 3",
+#           "trust level 4",
+#           "trust level 5")
+# names(strip.name) <- c("New", "Relatively new", "Established")
+beacon_byestablish <- 
+  kfc |> 
+  dplyr::select(
+    beacon,
+    group_establish
+  ) |> 
+  #mutate(soc_trust_1 = as.character(soc_trust_1)) |> 
+  naniar::replace_with_na_all(~.x == -99) |> 
+  na.omit() |>
+  group_by(beacon, group_establish) |> 
+  summarise(freq = as.numeric(n())) |> 
+  ungroup() |> 
+  add_count(group_establish, wt = freq) |> 
+  mutate(percentage = freq/n) |> 
+  ggplot(aes(x = "", y = percentage, fill = beacon)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar("y", start = 0)+
+  scale_fill_brewer("blues")+
+  facet_wrap(~group_establish)+
+  theme_minimal()+
+  guides(fill = guide_legend(title = ""),
+         color = guide_legend(title = ""))+
+  labs(title = "Figure2. distribution of beacon check behavior by group establishment",
+       x = "",
+       y = "",
+       caption = lab$group_establish)+
+  theme(
+    axis.text.x = element_blank(),
+    legend.position = "bottom",
+    plot.caption = element_text(hjust = 0.5),
+    plot.title = element_text(hjust = 0.5, family = "Palatino", face = "bold"),
+    plot.background = element_rect(fill = "lightblue")
+    ) 
+
+```
+
+```{r}
+# strip.name <- c("trust level 2",
+#           "trust level 3",
+#           "trust level 4",
+#           "trust level 5")
+# names(strip.name) <- c("New", "Relatively new", "Established")
+beacon_bydynamic <- kfc |> 
+  dplyr::select(
+    beacon,
+    soc_groupdyn
+  ) |> 
+  #mutate(soc_trust_1 = as.character(soc_trust_1)) |> 
+  naniar::replace_with_na_all(~.x == -99) |> 
+  na.omit() |>
+  group_by(beacon, soc_groupdyn) |> 
+  summarise(freq = as.numeric(n())) |> 
+  ungroup() |> 
+  add_count(soc_groupdyn, wt = freq) |> 
+  mutate(percentage = freq/n) |> 
+  ggplot(aes(x = "", y = percentage, fill = beacon)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar("y", start = 0)+
+  scale_fill_brewer("blues")+
+  facet_wrap(~soc_groupdyn)+
+  theme_minimal()+
+  guides(fill = guide_legend(title = ""),
+         color = guide_legend(title = ""))+
+  labs(title = "Figure3. distribution of beacon check behavior by group dynamic",
+       x = "",
+       y = "",
+       caption = paste(str_wrap(lab$soc_groupdyn, 90), collapse = "\n"))+
+  theme(
+    axis.text.x = element_blank(),
+    legend.position = "bottom",
+    plot.caption = element_text(hjust = 0.5, vjust = 2),
+    plot.title = element_text(hjust = 0.5, family = "Palatino", face = "bold"),
+    plot.background = element_rect(fill = "wheat")
+    #panel.background = element_rect(color = "black")
+    #plot.margin = unit(c(5, 5, 5, 5), "cm")
+    ) 
+```
+
+Their relationship was visualized as below.
+
+```{r fig.width=8, fig.height=10}
+library(patchwork)
+beacon_bytrust/beacon_byestablish/beacon_bydynamic
+```
+
+Note for the plot above: 
+
+**a.** Beacon checking behavior is related to the level of trust, group establishment and group dynamics.
+
+**b.** The effect only worked for distinguishing lower level of these indicators from the medium or higher levels, not medium from higher levels. 
+
+## Snow factors checked and confidence in avalanche risk estimates
+
+Checking some factors might help improve the confidence in low/high danger avalanche estimates. 
+
+Below is the percentage of each snow factors selected by high v.s. low confidence (for high risk avalanche estimate) respondents.
+
+```{r fig.width= 12, fig.height =10}
+kfc |> 
+  dplyr::select(
+    index,
+    starts_with("af_"),
+    risk_hi_confi_2
+  ) |> 
+  naniar::replace_with_na_all(~.x == "-99") |> 
+  pivot_longer(
+    !c(index, risk_hi_confi_2),
+    names_to = "factor",
+    values_to = "selected",
+    values_drop_na = TRUE
+  ) |> 
+  na.omit() |> 
+  group_by(
+    selected,
+    risk_hi_confi_2
+  ) |> 
+  summarise(
+    n = n()
+  ) |> 
+  ggplot(aes(x= fct_reorder(selected, n, .desc = F), y = n, fill = risk_hi_confi_2)) +
+  geom_bar(position = "fill",stat = "identity",  color = "black") +
+  coord_flip()+
+  scale_fill_manual(values = c("wheat", "darkred"))+
+  geom_text(aes(label = n), position = position_fill(vjust = 1.1))+
+  labs(x= "", y = "Percentage", title = "Percentage of snow factors used, high vs low confidence (high danger avalanche)")+
+  theme(plot.background = element_rect(fill = "white", color = "black"),
+        legend.position = c(0.20, 0.9),
+        axis.text.y = element_text(size = 12),
+        legend.text = element_text(size = 10),
+        axis.title.x = element_text (size = 12),
+        plot.title = element_text(size = 14, family = "Palatino", face = "bold")
+        )+
+  guides(fill = guide_legend(title = "High danger ava likelihood \nest. confidence"))+
+  geom_hline(yintercept = 0.33, color = "white" )
+
+```
+
+Note for the plot above: 
+
+**a.** Respondents with high confidence (in **HIGH** danger avalanche estimate) almost always less or equally possible to check a snow factor. (They took confidence from somewhere else? The confidence made them check less? They checked a condensed set of factors?)
+
+**b.** Such effect occurred in bull's eye cue factors more often than in sophisticated factors.
+
+Below is the percentage of each snow factors selected by high v.s. low confidence (for low danger avalanche estimate) respondents.
+
+```{r fig.width= 12, fig.height =10}
+kfc |> 
+  dplyr::select(
+    index,
+    starts_with("af_"),
+    risk_low_confi_2
+  ) |> 
+  naniar::replace_with_na_all(~.x == "-99") |> 
+  pivot_longer(
+    !c(index, risk_low_confi_2),
+    names_to = "factor",
+    values_to = "selected",
+    values_drop_na = TRUE
+  ) |> 
+  na.omit() |> 
+  group_by(
+    selected,
+    risk_low_confi_2
+  ) |> 
+  summarise(
+    n = n()
+  ) |> 
+  ggplot(aes(x= fct_reorder(selected, n, .desc = F), y = n, fill = risk_low_confi_2)) +
+  geom_bar(position = "fill",stat = "identity",  color = "black") +
+  coord_flip()+
+  scale_fill_manual(values = c("wheat", "darkred"))+
+  geom_text(aes(label = n), position = position_fill(vjust = 1.1))+
+  labs(x= "", y = "Percentage", title = "Percentage of snow factors used, high vs low confidence (low danger avalanche)")+
+  theme(plot.background = element_rect(fill = "white", color = "black"),
+        legend.position = c(0.20, 0.9),
+        axis.text.y = element_text(size = 12),
+        legend.text = element_text(size = 10),
+        axis.title.x = element_text (size = 12),
+        plot.title = element_text(size = 14, family = "Palatino", face = "bold")
+        )+
+  guides(fill = guide_legend(title = "Low danger ava likelihood \nest. confidence"))+
+  geom_hline(yintercept = 0.38, color = "white" )
+
+```
+
+Note for the plot above: 
+
+**a.** Respondents with high confidence (in **LOW** danger avalanche estimate) almost always less or equally possible to check a snow factor. (They took confidence from somewhere else? The confidence made them check less? They checked a condensed set of factors?)
+
+**b.** Such effect occured in bull's eye cue factors more often than in sophisticated factors.
+
+## Terrain factors checked and confidence in avalanche risk estimates
+
+Checking some terrian factors might help improve the confidence in low/high danger avalanche estimates. 
+
+Below is the percentage of each terrain factors selected by high v.s. low confidence (for high danger avalanche estimate) respondents.
+
+```{r fig.width= 12, fig.height =5}
+kfc |> 
+  dplyr::select(
+    index,
+    starts_with("t_f_"),
+    risk_hi_confi_2
+  ) |> 
+  naniar::replace_with_na_all(~.x == "-99") |> 
+  pivot_longer(
+    !c(index, risk_hi_confi_2),
+    names_to = "factor",
+    values_to = "selected",
+    values_drop_na = TRUE
+  ) |> 
+  na.omit() |> 
+  group_by(
+    selected,
+    risk_hi_confi_2
+  ) |> 
+  summarise(
+    n = n()
+  ) |> 
+  ggplot(aes(x= fct_reorder(selected, n, .desc = F), y = n, fill = risk_hi_confi_2)) +
+  geom_bar(position = "fill",stat = "identity",  color = "black") +
+  coord_flip()+
+  scale_fill_manual(values = c("wheat", "darkred"))+
+  geom_text(aes(label = n), position = position_fill(vjust = 1.1))+
+  labs(x= "", y = "Percentage", title = "Percentage of terrain factors used, high vs low confidence  (high danger avalanche)")+
+  theme(plot.background = element_rect(fill = "white", color = "black"),
+        legend.position = c(0.75,0.2),
+        axis.text.y = element_text(size = 12),
+        legend.text = element_text(size = 10),
+        axis.title.x = element_text (size = 12),
+        plot.title = element_text(size = 14, family = "Palatino", face = "bold"))+
+  guides(fill = guide_legend(title = "High danger ava likelihood \nest. confidence"))
+
+```
+
+Note for the plot above: 
+
+**a.** Respondents with high confidence (in **HIGH** danger avalanche estimate) almost always less  possible to check a terrain factor. (They took confidence from somewhere else? The confidence made them check less? They checked a condensed set of factors?)
+
+Below is the percentage of each terrain factors selected by high v.s. low confidence (for low danger avalanche estimate) respondents.
+
+```{r fig.width= 12, fig.height =5}
+kfc |> 
+  dplyr::select(
+    index,
+    starts_with("t_f_"),
+    risk_low_confi_2
+  ) |> 
+  naniar::replace_with_na_all(~.x == "-99") |> 
+  pivot_longer(
+    !c(index, risk_low_confi_2),
+    names_to = "factor",
+    values_to = "selected",
+    values_drop_na = TRUE
+  ) |> 
+  na.omit() |> 
+  group_by(
+    selected,
+    risk_low_confi_2
+  ) |> 
+  summarise(
+    n = n()
+  ) |> 
+  ggplot(aes(x= fct_reorder(selected, n, .desc = F), y = n, fill = risk_low_confi_2)) +
+  geom_bar(position = "fill",stat = "identity",  color = "black") +
+  coord_flip()+
+  scale_fill_manual(values = c("wheat", "darkred"))+
+  geom_text(aes(label = n), position = position_fill(vjust = 1.1))+
+  labs(x= "", y = "Percentage", title = "Percentage of terrain factors used, high vs low confidence  (low danger avalanche)")+
+  theme(plot.background = element_rect(fill = "white", color = "black"),
+        legend.position = c(0.75,0.2),
+        axis.text.y = element_text(size = 12),
+        legend.text = element_text(size = 10),
+        axis.title.x = element_text (size = 12),
+        plot.title = element_text(size = 14, family = "Palatino", face = "bold"))+
+  guides(fill = guide_legend(title = "Low danger ava likelihood \nest. confidence"))+
+  geom_hline(yintercept = 0.386, color = "white" )
+```
+
+```{r fig.width= 12, fig.height =5}
+#FIXME: added chunk
+kfc |> 
+  dplyr::select(
+    index,
+    starts_with("t_f_"),
+    likelihood_s2
+  ) |> 
+  naniar::replace_with_na_all(~.x == "-99") |> 
+  pivot_longer(
+    !c(index, likelihood_s2),
+    names_to = "factor",
+    values_to = "selected",
+    values_drop_na = TRUE
+  ) |> 
+  na.omit() |> 
+  group_by(
+    selected,
+    likelihood_s2
+  ) |> 
+  summarise(
+    n = n()
+  ) |> 
+  ggplot(aes(x= fct_reorder(selected, n, .desc = F), y = n, fill = likelihood_s2)) +
+  geom_bar(position = "fill",stat = "identity",  color = "black") +
+  coord_flip()+
+  scale_fill_brewer("blues")+
+  geom_text(aes(label = n), position = position_fill(vjust = 1.1))+
+  labs(x= "", y = "Percentage", title = "Percentage of terrain factors used, low to none vs moderate to high estimates  (high danger avalanche)")+
+  theme(plot.background = element_rect(fill = "white", color = "black"),
+        legend.position = c(0.55,0.2),
+        axis.text.y = element_text(size = 12),
+        legend.text = element_text(size = 10),
+        axis.title.x = element_text (size = 12),
+        plot.title = element_text(size = 14, family = "Palatino", face = "bold"))+
+  guides(fill = guide_legend(title = "Low danger ava likelihood \nest. confidence"))+
+  geom_hline(yintercept = 0.386, color = "white" )
+```
+
+Note for the plot above: 
+
+**a.** Respondents with high confidence (in **LOW** danger avalanche estimate) almost always less  possible to check a terrain factor. (They took confidence from somewhere else? The confidence made them check less? They checked a condensed set of factors?)
+
+## Group factors checked and confidence in avalanche risk estimates
+
+Checking some group factors might help improve the confidence in low/high danger avalanche estimates. 
+
+Below is the percentage of each group factors selected by high v.s. low confidence (for high danger avalanche estimate) respondents.
+
+```{r fig.width= 12, fig.height =5}
+kfc |> 
+  dplyr::select(
+    index,
+    starts_with("g_f_"),
+    risk_hi_confi_2
+  ) |> 
+  naniar::replace_with_na_all(~.x == "-99") |> 
+  pivot_longer(
+    !c(index, risk_hi_confi_2),
+    names_to = "factor",
+    values_to = "selected",
+    values_drop_na = TRUE
+  ) |> 
+  na.omit() |> 
+  group_by(
+    selected,
+    risk_hi_confi_2
+  ) |> 
+  summarise(
+    n = n()
+  ) |> 
+  ggplot(aes(x= fct_reorder(selected, n, .desc = F), y = n, fill = risk_hi_confi_2)) +
+  geom_bar(position = "fill",stat = "identity",  color = "black") +
+  coord_flip()+
+  scale_fill_manual(values = c("wheat", "darkred"))+
+  geom_text(aes(label = n), position = position_fill(vjust = 1.1))+
+  labs(x= "", y = "Percentage", title = "Percentage of group factors selected, high vs low confidence")+
+  theme(plot.background = element_rect(fill = "white", color = "black"),
+        legend.position = c(0.2,0.2),
+        axis.text.y = element_text(size = 12),
+        legend.text = element_text(size = 10),
+        axis.title.x = element_text (size = 12),
+        plot.title = element_text(size = 14, family = "Palatino", face = "bold"))+
+  guides(fill = guide_legend(title = "High danger ava likelihood \nest. confidence"))
+```
+
+Note for the plot above: 
+
+**a.** Respondents with high confidence (in **HIGH** danger avalanche estimate) almost always less  possible to check a group factor. (They took confidence from somewhere else? The confidence made them check less? They checked a condensed set of factors?)
+
+Below is the percentage of each group factors selected by high v.s. low confidence (for low danger avalanche estimate) respondents.
+
+```{r fig.width= 12, fig.height =5}
+kfc |> 
+  dplyr::select(
+    index,
+    starts_with("g_f_"),
+    risk_low_confi_2
+  ) |> 
+  naniar::replace_with_na_all(~.x == "-99") |> 
+  pivot_longer(
+    !c(index, risk_low_confi_2),
+    names_to = "factor",
+    values_to = "selected",
+    values_drop_na = TRUE
+  ) |> 
+  na.omit() |> 
+  group_by(
+    selected,
+    risk_low_confi_2
+  ) |> 
+  summarise(
+    n = n()
+  ) |> 
+  ggplot(aes(x= fct_reorder(selected, n, .desc = F), y = n, fill = risk_low_confi_2)) +
+  geom_bar(position = "fill",stat = "identity",  color = "black") +
+  coord_flip()+
+  scale_fill_manual(values = c("wheat", "darkred"))+
+  geom_text(aes(label = n), position = position_fill(vjust = 1.1))+
+  labs(x= "", y = "Percentage", title = "Percentage of group factors used, high vs low confidence (low danger avalanche)")+
+  theme(plot.background = element_rect(fill = "white", color = "black"),
+        legend.position = c(0.2,0.2),
+        axis.text.y = element_text(size = 12),
+        legend.text = element_text(size = 10),
+        axis.title.x = element_text (size = 12),
+        plot.title = element_text(size = 14, family = "Palatino", face = "bold"))+
+  guides(fill = guide_legend(title = "Low danger ava likelihood \nest. confidence"))
+```
+
+
+Note for the plot above: 
+
+**a.** Respondents with high confidence (in **LOW** danger avalanche estimate) almost always less  possible to check a group factor. (They took confidence from somewhere else? The confidence made them check less? They checked a condensed set of factors?)
+
+
+## Number of factors used and confidence in avalanche estimates
+
+Does number of factors used by the skier influence their confidence in avalanche estimates (low and high danger, respectively)?
+
+Below is for checking this assumption in high danger avalanche estimates.
+
+```{r}
+label.name <- c(
+  "Snow factors used",
+  "Terrain factors used",
+  "Group factors used",
+  "All factors used (including prior info)")
+
+names(label.name) <- c(
+  "n_f_crit",
+  "n_t_factor",
+  "n_g_factor",
+  "n_pstg")
+
+kfc |> 
+  dplyr::select(
+    n_f_crit,
+    n_t_factor,
+    n_g_factor,
+    n_pstg,
+    risk_hi_confi_2
+  ) |> 
+  pivot_longer(
+    !risk_hi_confi_2,
+    names_to = "variable",
+    values_to = "value"
+  ) |> 
+  na.omit() |> 
+  ggplot(aes(x = risk_hi_confi_2, y = value))+
+  geom_boxplot()+
+  facet_wrap(~variable, scales = "free", labeller = labeller(variable = label.name))+
+  labs(
+    x = "Confidence in avalanche estimates (high danger avalanche)",
+    y = "number of factors used",
+    title = "Confidence in avalanche estimates and number of factors used")+
+  theme(
+    panel.background = element_rect(color = "black", fill = "white"),
+    strip.background = element_rect(color = "black", fill = "lightblue"),
+    strip.text = element_text(color = "black", family = "Palatino",face = "bold")
+  )
+```
+
+Note for the plot above: 
+
+**a.** The medium, 1st quartile and 3rd quartile for high-confidence respondents' group factor, terrain factors and all factors were higher than their low-confidence conterparts. However, the differences are very limited.
+
+**b.** Interquartile range is wider for high confidence respondents' snow factors comparing to low confidence respondents.
+
+```{r}
+kfc |> 
+  dplyr::select(
+    n_f_crit,
+    n_t_factor,
+    n_g_factor,
+    n_pstg,
+    risk_low_confi_2
+  ) |> 
+  pivot_longer(
+    !risk_low_confi_2,
+    names_to = "variable",
+    values_to = "value"
+  ) |> 
+  na.omit() |> 
+  ggplot(aes(x = risk_low_confi_2, y = value))+
+  geom_boxplot()+
+  facet_wrap(~variable, scales = "free", labeller = labeller(variable = label.name))+
+  labs(
+    x = "Confidence in avalanche estimates (low danger avalanche)",
+    y = "number of factors used",
+    title = "Confidence in avalanche estimates and number of factors used")+
+  theme(
+    panel.background = element_rect(color = "black", fill = "white"),
+    strip.background = element_rect(color = "black", fill = "lightblue"),
+    strip.text = element_text(color = "black", family = "Palatino",face = "bold")
+  )
+```
+
+Note for the plot above: 
+
+**a.** The medium, 1st quartile and 3rd quartile for high-confidence respondents' terrain factors and all factors were higher than their low-confidence conterparts. However, the differences are very limited.
+
+**b.** Interquartile range is wider for low confidence respondents' group factors comparing to high confidence respondents.
+
+**c.** For snow factors, the distribution of number of factors used are basically the same across two confidence groups.
+
+## Snow factor information collection frequency and confidence in avalanche estimate
+
+Does the familiarity with the slope influence the snow factor information collecting behavior? See the plot below.
+
+```{r fig.width= 8, fig.height =5}
+kfc |> 
+  dplyr::select(
+    index,
+    snow_freq,
+    freq_trips
+  ) |> 
+  naniar::replace_with_na_all(~.x ==  "-99") |> 
+  na.omit() |> 
+  group_by(
+    snow_freq,
+    freq_trips
+    ) |> 
+  summarise(freq = n()) |>
+  ungroup() |> 
+  add_count(freq_trips, wt = freq) |> 
+  mutate(percentage = freq/n) |> 
+  ggplot(aes(x = freq_trips, y = freq, 
+             fill = snow_freq)
+         )+
+  geom_bar(position = "fill", stat = "identity", color = "black") +
+  geom_text(aes(label = freq), position = position_fill(), vjust = -0.3) +
+  labs(x = "", y = "How often the information was collected",
+       title = "How often the information was collected by the familarity of the slope") +
+  scale_fill_brewer("blue")+
+  scale_x_discrete(labels = c("None", "Once", "2-3 times", "4-10 times", ">10 times"))+
+  guides(fill = guide_legend(title =""))+
+  theme(
+    axis.text.x = element_text(size = 14, family = "Times New Roman", angle = 45, vjust =0.5, hjust = 0.5),
+    legend.position  = "bottom",
+    axis.title.y = element_text(size = 12),
+    plot.title = element_text(size = 15, face = "bold", family = "Palatino"),
+    panel.background =element_rect(fill = "white", color = "black")
+  )
+```
+
+Note for the plot above: 
+
+**a.**  Skiers are more possible to collect information continuously when they have >4 times of similar trips.
+
+**b.** The result can be not robust, due to small number of respondents in some levels. 
+
+```{r fig.height= 7, fig.width = 8}
+#FIXME:this pie chart is not in use anymore
+# kfc |> 
+#   dplyr::select(
+#     index,
+#     snow_freq,
+#     freq_trips
+#   ) |> 
+#   naniar::replace_with_na_all(~.x ==  "-99") |> 
+#   na.omit() |> 
+#   group_by(
+#     snow_freq,
+#     freq_trips
+#     ) |> 
+#   summarise(freq = n()) |>
+#   ungroup() |> 
+#   add_count(freq_trips, wt = freq) |> 
+#   mutate(percentage = freq/n) |> 
+#   ggplot(aes(x = "", y = percentage, fill = snow_freq)) +
+#   geom_bar(stat = "identity", size = 0) +
+#   facet_wrap(~freq_trips) +
+#   coord_polar("y", start = 0) +
+#   scale_fill_brewer("blue") +
+#   guides(fill = guide_legend(title = "Familarity of the slope"))+
+#   labs(x= "", y = "", title = "Percentage of info. collection frequency by familarity of the slope")+
+#   theme(
+#     legend.position = c(0.83, 0.2),
+#     plot.title = element_text(family = "Palatino", face = "bold", size = 15),
+#     strip.text = element_text(family = "Times New Roman", size = 12),
+#     panel.background = element_rect(fill = "wheat", color = "black"),
+#     strip.background = element_rect(fill = "lightblue", color = "black"),
+#     legend.text = element_text(size = 12, family = "Times New Roman"),
+#     legend.title = element_text(size = 13, family = "Times New Roman")
+#   )
+```
+
+```{r}
+#FIXME:this pie chart is not in use anymore
+# kfc |> 
+#   dplyr::select(
+#     index,
+#     snow_freq
+#   ) |> 
+#   naniar::replace_with_na_all(~.x ==  "-99") |> 
+#   na.omit() |> 
+#   group_by(snow_freq) |> 
+#   summarise(freq = n()) |> 
+#   ggplot(aes(x = "", y = freq, fill = snow_freq)) +
+#   geom_bar(stat = "identity", size = 0) +
+#   coord_polar("y", start = 0) +
+#   scale_fill_brewer("blue") 
+```
+
+## Avalanche estimates and confidence
+
+How avalanche risk estimates and confidence can influence each other?
+
+```{r fig.width= 10, fig.height=8}
+lab.name <- c("Size 1(small)", "Size 2(medium to large)")
+names(lab.name) <- c("s1", "s2")
+
+kfc |> 
+  dplyr::select(
+    index, 
+    starts_with("likelihood_"),
+    starts_with("confidence_")
+    ) |> 
+  pivot_longer(
+    !c(index, likelihood_s1, likelihood_s2),
+    names_to = "size_confidence",
+    values_to = "confi"
+  ) |> pivot_longer(
+    !c(index, size_confidence, confi),
+    names_to = "size_likelihood",
+    values_to = "likeli"
+  ) |> 
+  mutate(type = case_when(size_confidence == "confidence_s1" ~ "s1",
+                          size_confidence == "confidence_s2" ~ "s2")) |> 
+  dplyr::select(
+    -size_confidence,
+    -size_likelihood
+  ) |> 
+  na.omit() |> 
+  group_by(confi, likeli, type) |> 
+  summarise(n = n()) |> 
+  ggplot(aes(x = likeli, y = confi)) +
+  geom_point(aes(size = n), fill = "wheat", shape = 21, stroke =1) +
+  geom_text(aes(label = n)) +
+  scale_size_continuous(range = c(6, 18)) +
+  facet_wrap(~type, labeller = labeller(type = lab.name))+
+  guides(size = guide_legend(title = "Number of choices"))+
+  labs(
+    x = "Likelihood estimates", 
+    y = "Confidence",
+    title = "Figure. Distribution of confidence by different likelihood estimates for two sizes of avalanche")+
+  theme(
+    plot.title = element_text(size = 15, family = "Palatino", face = "bold"),
+    panel.background = element_rect(color = "black", fill = "gray"),
+    strip.background = element_rect(color = "black", fill = "wheat"),
+    legend.position = "bottom",
+    axis.text = element_text(size = 12, family = "Times New Roman"),
+    axis.title = element_text(size = 13, family = "Times New Roman"),
+    strip.text = element_text(size = 12, family = "Times New Roman")
+    #panel.grid.major = element_blank()
+  )
+```
+
+Note for the plot above: 
+
+**a.**  Unlikely and possible estimates for both sizes with high or medium confidence were most often seen.
+
+**b.**  Almost certain or excluded level of confidence were rare.
+
+**c.**  Very low confidence were rare.
+
+**d.** A few skiers can give "unlikely" estimate with very high confidence.
+
+
+## Decision for critical slope and reason to ski/not-ski
+
+Does the decision for critical slope led to by different reasons? 
+
+```{r fig.width= 16, fig.height =6}
+why.fig <- kfc |> 
+  dplyr::select(
+    index,
+    starts_with("yski_"),
+    decision
+  ) |> 
+  naniar::replace_with_na_all(~.x == "-99") |> 
+  pivot_longer(
+    !c(index, decision),
+    names_to = "why",
+    values_to = "selected",
+    values_drop_na = TRUE
+  ) |> 
+  na.omit() |> 
+  group_by(
+    selected,
+    decision
+  ) |> 
+  summarise(
+    n = n()
+  ) |> 
+  ggplot(aes(x= fct_reorder(selected, n, .desc = F), y = n, fill = decision)) +
+  geom_bar(position = "fill",stat = "identity",  color = "black") +
+  coord_flip()+
+  scale_fill_brewer("blue")+
+  geom_text(aes(label = n), position = position_fill(vjust = 1.1))+
+  labs(x= "", y = "Percentage", title = "Percentage of decisions, by reasons to ski")+
+  theme(plot.background = element_rect(fill = "white", color = "black"),
+        legend.position ="bottom",
+        axis.text.y = element_text(size = 12),
+        legend.text = element_text(size = 10),
+        axis.title.x = element_text (size = 12),
+        plot.title = element_text(size = 16, family = "Palatino", face = "bold")
+        )+
+  guides(fill = guide_legend(title = "Decisions"))
+
+```
+
+```{r fig.width= 16, fig.height =6}
+whynot.fig <- kfc |> 
+  dplyr::select(
+    index,
+    starts_with("ynski_"),
+    decision
+  ) |> 
+  naniar::replace_with_na_all(~.x == "-99") |> 
+  pivot_longer(
+    !c(index, decision),
+    names_to = "whynot",
+    values_to = "selected",
+    values_drop_na = TRUE
+  ) |> 
+  na.omit() |> 
+  group_by(
+    selected,
+    decision
+  ) |> 
+  summarise(
+    n = n()
+  ) |> 
+  ggplot(aes(x= fct_reorder(selected, n, .desc = F), y = n, fill = decision)) +
+  geom_bar(position = "fill",stat = "identity",  color = "black") +
+  coord_flip()+
+  scale_fill_brewer("blue")+
+  geom_text(aes(label = n), position = position_fill(vjust = 1.1))+
+  labs(x= "", y = "Percentage", title = "Percentage of decisions, by reasons not to ski")+
+  theme(plot.background = element_rect(fill = "white", color = "black"),
+        legend.position ="bottom",
+        axis.text.y = element_text(size = 12),
+        legend.text = element_text(size = 10),
+        axis.title.x = element_text (size = 12),
+        plot.title = element_text(size = 16, family = "Palatino", face = "bold")
+        )+
+  guides(fill = guide_legend(title = "Decisions"))
+
+```
+
+The above assumption was checked by the plot below.
+
+```{r fig.width= 16, fig.height =12}
+why.fig/whynot.fig
+```
+
+# Case-wise inspection
+
+## Who Still ski even though high likelihood for an avalanche?
+
+The plots below described the skiers who decided to ski even though he believed an avalanche (small and danger avalanche, respectively) is at least possible to happen.
+
+```{r}
+brave <- 
+kfc |> 
+  filter(
+    # likelihood_s1 %in% c(
+    #   #"Possible", 
+    #   "Likely", 
+    #   "Almost certain"
+    #   ) |
+      likelihood_s2 %in% c(
+        #"Possible", 
+        "Likely", 
+        "Almost certain"
+        )
+  ) |> 
+  filter(
+    decision %in% c(
+      "To ascend the slope",
+      "To descend the slope",
+      "To ascend and descend the slope")
+  ) |> 
+  dplyr::select(
+    index,
+    likelihood_s1,
+    likelihood_s2,
+    confidence_s1,
+    confidence_s2,
+    freq_trips,
+    decision,
+    n_pstg,
+    skill_avi,
+    starts_with("yski_"),
+    group_nr,
+    outcome_dp
+  )
+
+brave2 <- 
+kfc |> 
+  filter(
+    likelihood_s1 %in% c(
+      #"Possible",
+      #"Likely",
+      "Almost certain"
+      ) 
+    #|
+      # likelihood_s2 %in% c(
+      #   #"Possible", 
+      #   "Likely", 
+      #   "Almost certain"
+      #   )
+  ) |> 
+  filter(
+    decision %in% c(
+      "To ascend the slope",
+      "To descend the slope",
+      "To ascend and descend the slope")
+  ) |> 
+  dplyr::select(
+    index,
+    likelihood_s1,
+    likelihood_s2,
+    confidence_s1,
+    confidence_s2,
+    freq_trips,
+    decision,
+    n_pstg,
+    skill_avi,
+    starts_with("yski_"),
+    group_nr,
+    outcome_dp
+  )
+```
+
+```{r fig.height= 7, fig.width= 15}
+brave |> 
+  pivot_longer(
+    cols = c(likelihood_s1, likelihood_s2),
+    names_to = "danger_level",
+    values_to = "likelihood"
+  ) |> 
+  pivot_longer(
+    cols = c(confidence_s1, confidence_s2),
+    names_to = "danger_level_2",
+    values_to = "confidence"
+  ) |> 
+  mutate(
+    danger_level = 
+      case_when(
+        danger_level == "likelihood_s1" ~ "Danger Small",
+        danger_level == "likelihood_s2" ~ "Danger Medium to Large",
+        TRUE~ as.character(NA)
+      )
+  ) %>%
+  mutate(across(starts_with("yski_"), as.character),
+         across(starts_with("yski_"), ~replace(., . == "-99"| is.na(.), ""))) %>%
+  mutate(
+    index_decision = paste0("Case", index, " from the group of ", group_nr," decided ", decision, " for the reason of\n",
+                            yski_sf.confi, "\n", yski_tf.confi, "\n", yski_tf.rgrdlss, "\n", yski_other.want)
+  ) |> 
+  dplyr::select(
+    -danger_level_2,
+    -decision
+  ) %>%
+  ggplot(aes(x = danger_level,  y = factor(index_decision))) +
+  geom_point(aes(size = likelihood, fill = confidence, color = freq_trips), shape = 21, stroke =2)+
+  scale_size_discrete(range = c(12,32)) +
+  scale_fill_manual(values = c("Low" = "grey", "Medium" ="seagreen", "High" = "firebrick2", "Very high" = "purple"))+
+  scale_color_manual(values = c("None - This was my first time" = "white", "2 - 3 times" ="gray34", "4 - 10 times" = "gray28", "More than 10 times" = "black"))+
+  geom_text(aes(label = n_pstg),size = 6, family = "Palatino")+
+  guides(fill = guide_legend(title = "Confidence level reflected \nby color"), 
+         color = guide_legend(title = "N of same trip reflected \nby ring color"),
+         size = guide_legend(title = "Likelihood est. relfected \nby ring size"))+
+  labs(
+    x = "Danger level", 
+    y = "",
+    title = "Figure. Characteristics of the respondent who decide to ski \nableit a danger avalanche is possible or certain",
+    caption = "Number in the ring is the totality of plan, snow, terrain and group factors used. \nThe mean(median) for all skiers is 12.64(13)")+
+  theme(
+    plot.title = element_text(size = 15, family = "Palatino", face = "bold"),
+    panel.background = element_rect(color = "black", fill = "salmon2"),
+    panel.grid = element_line(color = "black", size = 0.5),
+    axis.text = element_text(size = 12, family = "Times New Roman"),
+    axis.title = element_text(size = 13, family = "Times New Roman"),
+    strip.text = element_text(size = 12, family = "Times New Roman"),
+    plot.caption = element_text(color = "red", size = 9)
+  )
+```
+
+```{r fig.height= 7, fig.width= 15}
+brave2 |> 
+  pivot_longer(
+    cols = c(likelihood_s1, likelihood_s2),
+    names_to = "danger_level",
+    values_to = "likelihood"
+  ) |> 
+  pivot_longer(
+    cols = c(confidence_s1, confidence_s2),
+    names_to = "danger_level_2",
+    values_to = "confidence"
+  ) |> 
+  mutate(
+    danger_level = 
+      case_when(
+        danger_level == "likelihood_s1" ~ "Danger Small",
+        danger_level == "likelihood_s2" ~ "Danger Medium to Large",
+        TRUE~ as.character(NA)
+      )
+  ) |> 
+  mutate(across(starts_with("yski_"), as.character),
+         across(starts_with("yski_"), ~replace(., . == "-99"| is.na(.), ""))) %>%
+  mutate(
+    index_decision = paste0("Case", index, " from the group of ", group_nr," decided ", decision, " for the reason of\n",
+                            yski_sf.confi, "\n", yski_tf.confi, "\n", yski_tf.rgrdlss, "\n", yski_other.want)
+  ) |> 
+  dplyr::select(
+    -danger_level_2,
+    -decision
+  ) %>%
+  ggplot(aes(x = danger_level,  y = factor(index_decision))) +
+  geom_point(aes(size = likelihood, fill = confidence, color = freq_trips), shape = 21, stroke =2)+
+  scale_size_discrete(range = c(12,32)) +
+  scale_fill_manual(values = c("Low" = "grey", "Medium" ="seagreen", "High" = "firebrick2", "Very high" = "purple"))+
+  scale_color_manual(values = c("None - This was my first time" = "white", "2 - 3 times" ="gray34", "4 - 10 times" = "gray28", "More than 10 times" = "black"))+
+  geom_text(aes(label = n_pstg),size = 6, family = "Palatino")+
+  guides(fill = guide_legend(title = "Confidence level reflected \nby color"), 
+         color = guide_legend(title = "N of same trip reflected \nby ring color"),
+         size = guide_legend(title = "Likelihood est. relfected \nby ring size"))+
+  labs(
+    x = "Danger level", 
+    y = "",
+    title = "Figure2. Characteristics of the respondent who decide to ski \nableit a small avalanche is certain",
+    caption = "Number in the ring is the totality of plan, snow, terrain and group factors used")+
+  theme(
+    plot.title = element_text(size = 15, family = "Palatino", face = "bold"),
+    panel.background = element_rect(color = "black", fill = "salmon2"),
+    panel.grid = element_line(color = "black", size = 0.5),
+    axis.text = element_text(size = 12, family = "Times New Roman"),
+    axis.title = element_text(size = 13, family = "Times New Roman"),
+    strip.text = element_text(size = 12, family = "Times New Roman"),
+    plot.caption = element_text(color = "red", size = 9)
+  )
+```
+
+## Who came across an avalanche
+
+The plot below described the skiers who cam across an avalanche in the data.
+
+```{r}
+meet.ava <- 
+kfc |> 
+  filter(
+    outcome_dp %in% c(
+      #"Possible",
+      #"Likely",
+      "The slope avalanched, but no one was caught"
+      ) 
+    #|
+      # likelihood_s2 %in% c(
+      #   #"Possible", 
+      #   "Likely", 
+      #   "Almost certain"
+      #   )
+  ) |> 
+  dplyr::select(
+    index,
+    likelihood_s1,
+    likelihood_s2,
+    confidence_s1,
+    confidence_s2,
+    freq_trips,
+    decision,
+    n_pstg,
+    skill_avi,
+    starts_with("yski_"),
+    group_nr,
+    outcome_dp
+  )
+
+```
+
+
+```{r fig.height= 7, fig.width= 15}
+meet.ava |> 
+  pivot_longer(
+    cols = c(likelihood_s1, likelihood_s2),
+    names_to = "danger_level",
+    values_to = "likelihood"
+  ) |> 
+  pivot_longer(
+    cols = c(confidence_s1, confidence_s2),
+    names_to = "danger_level_2",
+    values_to = "confidence"
+  ) |> 
+  mutate(
+    danger_level = 
+      case_when(
+        danger_level == "likelihood_s1" ~ "Danger Small",
+        danger_level == "likelihood_s2" ~ "Danger Medium to Large",
+        TRUE~ as.character(NA)
+      )
+  ) |> 
+  mutate(across(starts_with("yski_"), as.character),
+         across(starts_with("yski_"), ~replace(., . == "-99"| is.na(.), ""))) %>%
+  mutate(
+    index_decision = paste0("Case", index, " from the group of ", group_nr," ,who met an avalanche, decided ", decision, " for the reason of\n",
+                            yski_sf.confi, "\n", yski_tf.confi, "\n", yski_tf.rgrdlss, "\n", yski_other.want)
+  ) |> 
+  dplyr::select(
+    -danger_level_2,
+    -decision
+  ) %>%
+  ggplot(aes(x = danger_level,  y = factor(index_decision))) +
+  geom_point(aes(size = likelihood, fill = confidence, color = freq_trips), shape = 21, stroke =2)+
+  scale_size_discrete(range = c(12,32)) +
+  scale_fill_manual(values = c("Low" = "grey", "Medium" ="seagreen", "High" = "firebrick2", "Very high" = "purple"))+
+  scale_color_manual(values = c("None - This was my first time" = "white", "2 - 3 times" ="gray34", "4 - 10 times" = "gray28", "More than 10 times" = "black"))+
+  geom_text(aes(label = n_pstg),size = 6, family = "Palatino")+
+  guides(fill = guide_legend(title = "Confidence level reflected \nby color"), 
+         color = guide_legend(title = "N of same trip reflected \nby ring color"),
+         size = guide_legend(title = "Likelihood est. relfected \nby ring size"))+
+  labs(
+    x = "Danger level", 
+    y = "",
+    title = "Figure. Information about 6 skiers who \nmet an avalanche (not got caught)",
+    caption = "Number in the ring is the totality of plan, snow, terrain and group factors used")+
+  theme(
+    plot.title = element_text(size = 15, family = "Palatino", face = "bold"),
+    panel.background = element_rect(color = "black", fill = "salmon2"),
+    panel.grid = element_line(color = "black", size = 0.5),
+    axis.text = element_text(size = 12, family = "Times New Roman"),
+    axis.title = element_text(size = 13, family = "Times New Roman"),
+    strip.text = element_text(size = 12, family = "Times New Roman"),
+    plot.caption = element_text(color = "red", size = 9)
+  )
+```
+
+
+# Correlation matrix of selected variables
+
+## Individual-level correlation matrix
+
+In this section, we examine the correlation between most of the numeric and ordinal variables by plotting the correlation matrix. To address the considerable number of relevant variables, we separate them into different matrices. Since variables of confidence in avalanche size/likelihood estimates, confidence in steepness estimates and self-reported trip outcome are potential outcome variables in future analysis, we arranged these variable so that they appear repeatedly in all the matrices with their potential explanatory variables. The outcome variables are:
+
+- **risk_hi_est** Likelihood estimates for a dangerous avalanche  
+- **risk_hi_confi** Confidence in the estimate above.
+- **risk_low_est** Likelihood estimates for a less dangerous avalanche  
+- **risk_low_confi** Confidence in the estimate above.
+- **risk_mean_confi** Mean value for the above two estimates (after converting to numeric)
+- **outcome_dp** Self-reported outcome of decision point. 
+- **steep_confi** Confidence in my steepness estimates.
+
+We also converted the ordinal variables to numeric to aide the interpret-ability, and chance in finding pattern. Doing this might exaggerate the correlation coefficients and increase the probability for type I error. Nonetheless, we did this with the consideration that this analysis is data-driven and exploratory, and what we hope for achieving is the idea facilitating future modelling. To prepare the data for generating the matrices, we first did the following data conversion:
+
+- Convert ordinal data into numeric
+
+- Prepare variable names dedicated to showing in the matrix strips, with improved read-ability.
+
+After doing these, we made Three correlation matrices. They are:
+
+- Outcome variables and some of other original variables (Matrix 1)
+
+- Outcome variables and strength of types of information seeking behaviors (Matrix 2 and 3)
+
+```{r}
+#define functions that allow for fine-tuning GGally matrix aesthetics.
+my.fun.density <- function(data, mapping, ...) { #notes are roughly same with above
+  
+  ggplot(data = data, mapping = mapping) +
+    geom_histogram(aes(y=..density..),
+                   color = "black", 
+                   fill = "white")+
+    geom_density(fill = "#FF6666", alpha = 0.25) +
+    theme(panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank(),
+          panel.background = element_rect(fill = "lightblue",
+                                          color = "black"))
+} 
+
+#define a function that allows me to fine-tune the matrix
+my.fun.smooth <- function(data,    #my function needs 3 arguments
+                          mapping,
+                          method = "loess"){
+  
+  ####
+  x <- eval_data_col(data, mapping$x)
+  y <- eval_data_col(data, mapping$y)
+  
+  coef <- cor(x, y, method= "spearman", use='complete.obs')
+  
+  corr <- cor.test(x, y)
+  
+  corr.p <- corr$p.value
+  
+  match <- c(rep("yellow", 5), rep("wheat", 95))
+  fill <- match[findInterval(corr.p, seq(0, 1, length = 100))]
+  
+  match2 <- c(rep("black", 30), rep("firebrick", 70))
+  color <- match2[findInterval(abs(coef), seq(0, 1, length = 100))]
+  
+  match.size <- c(rep(1.5, 30), rep(2.5, 70))
+  size <- match.size[findInterval(abs(coef), seq(0, 1, length = 100))]
+  
+  ###
+  ggplot(data = data, #data is passed from ggpairs' arguments
+         mapping = mapping)+#aes is passed from ggpairs' arguments
+    geom_point(size = 0.3,  #draw points
+               color = "blue")+
+    geom_smooth(method = method,  #fit a linear regression
+                size = 0.3, 
+                color = "red")+
+    theme(panel.grid.major = element_blank(), #get rid of the grids
+          panel.grid.minor = element_blank(),
+          panel.background = element_rect(fill = fill, #adjust background #F0E442
+                                          color = color,
+                                          size = size
+                                          ))
+} 
+```
+
+```{r}
+# define a function allowing for adjusting text, frame color and panel background of ggpairs
+cor_func <- function(data, mapping, method, symbol, ...){
+  x <- eval_data_col(data, mapping$x)
+  y <- eval_data_col(data, mapping$y)
+  
+  coef <- cor(x, y, method=method, use='complete.obs')
+  
+  corr <- cor.test(x, y)
+  
+  corr.p <- corr$p.value
+  
+  colFn <- colorRampPalette(c("yellow", "white", "dodgerblue"), 
+                            interpolate ='spline')
+  
+  #colFn2 <- colorRampPalette(c("firebrick", "firebrick", "firebrick"), 
+  #                          interpolate ='spline')
+  
+  rampcols <- colFn(100)
+  #rampcols2 <- colFn2(100)
+  
+  match <- c(rampcols[1:5], rep("#FFFFFF", 95))
+  fill <- match[findInterval(corr.p, seq(0, 1, length = 100))]
+  
+  match2 <- c(rep("black", 30), rep("firebrick", 70))
+  fill2 <- match2[findInterval(abs(coef), seq(0, 1, length = 100))]
+  
+  match.size <- c(rep(1.5, 30), rep(2.5, 70))
+  size <- match.size[findInterval(abs(coef), seq(0, 1, length = 100))]
+  
+  ggally_text(
+    label = paste(symbol, as.character(round(coef, 3))), 
+    mapping = aes(),
+    xP = 0.5, yP = 0.5,
+    color = 'black',
+    ...) + 
+    theme_void() +
+    theme(panel.background = element_rect(fill = fill, color = fill2, size = size))
+}
+```
+
+```{r}
+#Convert ordinal variables into numeric
+kfc_cor <- 
+  kfc  %>% 
+  dplyr::select(where(is.numeric)| where(is.character) | where(is.factor)) |> 
+  naniar::replace_with_na_all(~.x == "-99") |>  
+  mutate(
+    across(
+      c(
+        "risk_hi_est",
+        "risk_hi_confi",
+        "risk_low_est",
+        "risk_low_confi",
+        "snow_freq",
+        "freq_trips",
+        "edu_highest",
+        "bc_days",
+        "bc_years",
+        "skill_avi",
+        "steep_confi",
+        "outcome_dp",
+        "outcome_nodm",
+        "group_establish",
+        "soc_groupdyn",
+        "trust"
+      ), 
+      sjlabelled::as_numeric
+    )
+  )
+    
+# kfc_cor <- 
+#   kfc_cor %>% 
+#   dplyr::select(where(is.numeric)| where(is.character) | where(is.factor)) |> 
+#   naniar::replace_with_na_all(~.x == "-99") 
+
+```
+
+```{r}
+#Prepare variable names dedicated to showing in the matrix strips, with improved read-ability.
+fig1.names <- make.names( 
+  c(
+    "High ava risk est.",
+    "Confi in my high-risk est.",
+    "Low ava risk est.",
+    "Confi in my low-risk est.",
+    "Mean confi in high-/low-risk est.",
+    "Outcome of  decision point",
+    "Confi in my steepness est.",
+    "Five yrs, n of slope trips",
+    #"Highest ava edu",
+    "Bc days",
+    "Bc years",
+    "Info-gathering freq",
+    "Skill level 1 to 6",
+    "Group size",
+    "How established the group",
+    "Group dynamics"
+    #"Trust"
+  )
+)
+```
+
+```{r}
+#Prepare variable names dedicated to showing in the matrix strips, with improved read-ability(continued).
+fig2.names <- 
+  make.names(
+    c(
+      "High ava risk est.",
+      "Confi in my high-risk est.",
+      "Low ava risk est.",
+      "Confi in my low-risk est.",
+      "Mean confi in high-/low-risk est.",
+      "Outcome of  decision point",
+      "Confi in my steepness est.",
+      "n of high-detail info used",
+      "n of low-detail info used",
+      "n of no-detail info used",
+      "n of presence of factors used",
+      "n of absence of factors used",
+      "n of any snow factor used",
+      "n of increased risk judge",
+      "n of decreased risk judge"
+    )
+  )
+```
+
+```{r}
+#Prepare variable names dedicated to showing in the matrix strips, with improved read-ability(continued).
+fig3.names <- 
+  make.names(
+    c(
+      "High ava risk est.",
+      "Confi in my high-risk est.",
+      "Low ava risk est.",
+      "Confi in my low-risk est.",
+      "Mean confi in high-/low-risk est.",
+      "Outcome of  decision point",
+      "Confi in my steepness est.",
+      "n of unchanged risk judge",
+      "n of risk judge dont know",
+      "n of terrain factor used",
+      "n of group factor used",
+      "n of reasons to ski",
+      "n of reasons not to ski",
+      "n of plan, snw, grp and trn fctrs used"
+    )
+  )
+```
+
+```{r}
+#Prepare variable names dedicated to showing in the matrix strips, with improved read-ability(continued).
+fig4.names <- make.names(
+  c(
+    "confi in my steepness est.",
+    "n of high-detail info used",
+    "n of low-detail info used",
+    "n of no-detail info used",
+    "n of presence of fctrs used",
+    "n of absence of fctrs used",
+    "n of any snow fctrs used",
+    "n of increased risk judge",
+    "n of decreased risk judge",
+    "n of unchanged risk judge",
+    "n of risk just dont know",
+    "n of terrain factor used",
+    "n of group factor used",
+    "n of reasons to ski",
+    "n of reasons not to ski"
+    #"n of plan, snw, grp and trn fctrs used"
+  )
+)
+```
+
+### Outcome variables and some of other original variables (Matrix 1)
+
+```{r fig.height= 11, fig.width=17}
+kfc_cor|> 
+  dplyr::select(
+    risk_hi_est,
+    risk_hi_confi,
+    risk_low_est,
+    risk_low_confi,
+    risk_mean_confi,
+    outcome_dp,
+    steep_confi,
+    #outcome_nodm,
+    freq_trips,
+    #edu_highest,
+    bc_days,
+    bc_years,
+    #starts_with("n_"),
+    snow_freq,
+    -n_f_pres_abse,
+    -n_why_notski,
+    -n_edu,
+    skill_avi,
+    n_people,
+    -f_crit_category,
+    group_establish,
+    soc_groupdyn
+    #soc_trust_1
+  ) %>% 
+  ggpairs(lower = 
+            list(continuous = my.fun.smooth), #lower half show points with fitted line
+          diag =
+            list(continuous = my.fun.density), #diagonal grids show density plots
+          upper =
+            list(continuous = wrap(cor_func,method = 'spearman', symbol = "Corr:\n")),
+          columnLabels = gsub('.', ' ',fig1.names, fixed = T),
+          labeller = label_wrap_gen(14)
+  ) +
+  theme (plot.title = element_text(
+    size = 18,  #adjust title visuals
+    face = "bold"),
+    #panel.background  = element_rect(
+      #color = "black", 
+    #  size = 1.5),
+    plot.caption = element_text(color = "red", face = "italic", size = 12),
+    strip.background = element_rect(color = "black", fill = "lightblue", size = 2),
+    strip.text.y = element_text(angle = 0, size = 11, face = "bold", color = "black"),
+    strip.text.x = element_text(angle = 0, size = 11, face = "bold", color = "black")
+  ) +
+  labs(caption = "Regressed by lowess;
+                  Red frame indicates |r|>0.3; Yellow background indicates significant p.
+        Variables that did not show neither >/< +/-0.2 nor sig. coefficients with any other variables were removed for the interest of space. They include varialbe 'trust' and 'highest_edu'",
+       title = "Figure 1. Potential outcome variables (first 7 cols/rows) and some of other original variables")
+```
+
+Note for the plot above: 
+
+**a.**  Back-country skiing experience (yearly) significantly correlates with confidence in risk estimates of **HIGH** danger avalanche.
+
+**b.**  Back-country skiing experience (yearly) significantly correlates with **MEAN** confidence in estimates of two sizes of avalanche.
+
+**c.**  Back-country skiing experience (daily) significantly correlates with confidence in risk estimates of **LOW** danger avalanche.
+
+**d.**  Back-country skiing experience (daily) significantly correlates with **MEAN** confidence in estimates of two sizes of avalanche.
+
+### Outcome variables and strength of types of information seeking behaviors (first 8 variables) (Matrix 2)
+
+```{r fig.height= 11, fig.width=17}
+#estimate confi with information seeking 1:8
+kfc_cor|> 
+  dplyr::select(
+    risk_hi_est,
+    risk_hi_confi,
+    risk_low_est,
+    risk_low_confi,
+    risk_mean_confi,
+    outcome_dp,
+    steep_confi,
+    # freq_trips,
+    # edu_highest,
+    # bc_days,
+    # bc_years,
+    starts_with("n_"),
+    # snow_freq,
+     -n_f_pres_abse,
+     -n_why_notski,
+     -n_edu,
+    # skill_avi,
+    # steep_confi
+    -n_people,
+    -"f_crit_category"
+  ) %>% 
+  dplyr::select(1:15) |> 
+  ggpairs(lower = 
+            list(continuous = my.fun.smooth), #lower half show points with fitted line
+          diag =
+            list(continuous = my.fun.density), #diagonal grids show density plots
+          upper =
+            list(continuous = wrap(cor_func,method = 'spearman', symbol = "Corr:\n")),
+          columnLabels = gsub('.', ' ',fig2.names, fixed = T),
+          labeller = label_wrap_gen(14)
+          ) +
+  theme (plot.title = element_text(
+    size = 18,  #adjust title visuals
+    face = "bold"),
+    #panel.background  = element_rect(
+      #color = "black", 
+     # size = 1.5),
+    plot.caption = element_text(color = "red", face = "italic", size = 12),
+    strip.background = element_rect(color = "black", fill = "lightblue", size = 2),
+    strip.text.y = element_text(angle = 0, size = 11, face = "bold", color = "black"),
+    strip.text.x = element_text(angle = 0, size = 11, face = "bold", color = "black")) +
+  labs(caption = "Regressed by lowess;
+                  Red frame indicates |r|>0.3; Yellow background indicates significant p",
+       title = "Figure 2. Outcome variables (first 7 cols/rows) and strength of types of information seeking behaviors (first 8 variables)")
+```
+
+Note for the plot above: 
+
+**a.**  Number of high detailed prior information used positively correlated with confidence in risk estimates of **HIGH** danger avalanche.
+
+**b.**  Number of low detailed prior information used negatively correlated with confidence in risk estimates of **HIGH** danger avalanche.
+
+**c.**  Number of high detailed prior information used positively correlated with **MEAN** confidence in estimates of two sizes of avalanche.
+
+**d.**  Number of present factor used positively correlated with the severity of the bad outcome.
+
+**e.**  Number of increased risk assessments positively correlated with the likelihood of low danger avalanche estimates.
+
+**f.**  Number of increased risk assessments positively correlated with the severity of the bad outcome.
+
+### Outcome variables and strength of types of information seeking behaviors (continued) (Matrix 3)
+
+```{r fig.height= 11, fig.width=17}
+#estimate confi with information seeking 1:7
+kfc_cor |> 
+  dplyr::select(
+    risk_hi_est,
+    risk_hi_confi,
+    risk_low_est,
+    risk_low_confi,
+    risk_mean_confi,
+    outcome_dp,
+    steep_confi,
+    # freq_trips,
+    # edu_highest,
+    # bc_days,
+    # bc_years,
+    starts_with("n_"),
+    # snow_freq,
+     -n_f_pres_abse,
+     #-n_why_notski,
+     -n_edu,
+    # skill_avi,
+    # steep_confi
+    -n_people,
+    -"f_crit_category"
+  ) %>% 
+  dplyr::select(1:7, 16:22) |> 
+  ggpairs(lower = 
+            list(continuous = my.fun.smooth), #lower half show points with fitted line
+          diag =
+            list(continuous = my.fun.density), #diagonal grids show density plots
+          upper =
+            list(continuous = wrap(cor_func,method = 'spearman', symbol = "Corr:\n")),
+          columnLabels = gsub('.', ' ',fig3.names, fixed = T),
+          labeller = label_wrap_gen(14)
+          ) +
+   theme (plot.title = element_text(
+    size = 18,  #adjust title visuals
+    face = "bold"),
+    #panel.background  = element_rect(
+      #color = "black", 
+     # size = 1.5),
+    plot.caption = element_text(color = "red", face = "italic", size = 12),
+    strip.background = element_rect(color = "black", fill = "lightblue", size = 2),
+    strip.text.y = element_text(angle = 0, size = 11, face = "bold", color = "black"),
+    strip.text.x = element_text(angle = 0, size = 11, face = "bold", color = "black")) +
+  labs(caption = "Regressed by lowess;
+                  Red frame indicates |r|>0.3; Yellow background indicates significant p",
+       title = "Figure 3 Outcome variables (first 7 cols/rows) and strength of types of information seeking behaviors (variable 9~)")
+```
+
+Note for the plot above: 
+
+**a.**  Number of reasons not to ski positively correlated with the severity of the bad outcome.
+
+**b.**  Confidence in steepness estimates positively correlated with **MEAN** confidence in estimates of two sizes of avalanche.
+
+# Multiple Correspondence Analysis (MCA)
+
+We have explored the relationships among ordinal and numerical variables in the previous section. Now we looked at the relationships among categorical and ordinal variables by multiple correspondence analysis (MCA). 
+
+MCA is a technique for analyzing categorical variables. It is essentially a form of factor analysis for categorical data. It gives a general understanding of how categorical variables are related.
+
+In this section, MCA for each subset of snow, terrain and group factors were performed. Potential outcome variables were placed into the plots as reference points (but did not enter the algorithm).
+
+For each section, we did these steps:
+
+- **Scree plot**. Eigenvalues measure the proportions of variances retained by the different dimensions. It will be printed as scree plot to observe how the first several dimensions (components) represent the full data set.
+
+- **Variable map**. (1)Plotting bi-plot, (2)correlation between variables and MCA principal dimensions, and (3) Factor variable category contributions to MCA principal dimensions
+
+- **Variable representation quality** Plot the COS2 statistics. COS2 (squared cosine) measures the quality of the representation for variables in factor map(2-dim solution). The higher cos2, the better. Variables with low cos2 should be treated and interpreted with caution.
+
+- **Variable contribution to the variable map** Contr measures the percentage contributions of the each variable to the definition (inertia) of the dimensions. The contr of the first two dimensions were displayed. The sum of contr for each dimension will be 1. Larger Contr means the variable captures larger inertia of the dimension. Contr has similar functions as factor loading scores as that in principal component analysis, hence by reviewing the variable categories having strong contribution to a dimension, it is possible to assume a construct reflected underneath. 
+
+- **Statistics** Show the above information in numbers instead of plots.
+
+```{r}
+#subset snow factors used and steepness estimate confidence (2 levels), 
+#mean confidence in risk estimates(2 levels)
+kfc_snow <- 
+  kfc |> 
+  filter(
+    dp_dic == "Yes"
+    #&
+    #  af_none != "None of these factors"
+  ) |> 
+  dplyr::select(
+    index,
+    #n_pstg,
+    starts_with("af_")|
+      steep_confi_2l|
+      risk_mean_confi_2l
+  ) %>%
+  mutate(
+    across(
+      starts_with("af_"), 
+      ~replace(., 
+               .=="-99"|is.na(.), 
+               #"NotSelected"
+               NA_character_
+      )
+    )
+  )
+
+```
+
+```{r}
+#subset snow terrain used and steepness estimate confidence (2 levels), 
+#mean confidence in risk estimates(2 levels)
+kfc_terrain <- 
+  kfc |> 
+  filter(
+    dp_dic == "Yes"
+    #&
+    # t_factor_9 != "I am not familiar with these concepts / don't know" &
+    # t_factor_2 != "None of these factors"
+  ) |> 
+  dplyr::select(
+    index,
+    starts_with("t_f")|
+      steep_confi_2l|
+      risk_mean_confi_2l
+  ) %>%
+  mutate(
+    across(
+      starts_with("t_f"), 
+      ~replace(., 
+               .=="-99"|is.na(.), 
+               #"NotSelected"
+               NA_character_
+      )
+    )
+  )
+```
+
+
+```{r}
+#subset group factors used and steepness estimate confidence (2 levels), 
+#mean confidence in risk estimates(2 levels)
+kfc_group <- 
+  kfc |> 
+  filter(
+    dp_dic == "Yes"
+    #&
+    #g_factor_9 != "I am not familiar with these concepts"&
+    #g_factor_8 != "None of these factors"
+  ) |> 
+  dplyr::select(
+    index,
+    starts_with("g_f")|
+      risk_mean_confi_2l|
+      steep_confi_2l
+  ) %>%
+  mutate(
+    across(
+      starts_with("g_f"), 
+      ~replace(., 
+               .=="-99"|is.na(.), 
+               #"NotSelected"
+               NA_character_
+      )
+    )
+  )
+```
+
+```{r fig.height= 9, fig.width=10}
+kfc_factor_init <- left_join(kfc_snow, kfc_terrain, by = c("index", "steep_confi_2l", "risk_mean_confi_2l"), keep = F)
+kfc_factor <- left_join(kfc_factor_init, kfc_group, by = c("index", "steep_confi_2l", "risk_mean_confi_2l"), keep = F)
+```
+
+## Snow factor MCA
+
+MCA was performed in this section for snow factor subset of data.
+
+```{r}
+kfc_snow <- 
+  kfc_snow |> 
+  filter(
+   is.na(af_none)
+    #af_none == "NotSelected"
+   ) |> 
+  dplyr::select(
+    -af_none
+  )
+```
+
+### Scree plot
+
+```{r}
+# perform MCA
+snow_mca <- 
+  MCA(
+    kfc_snow[,-1], 
+    #ncp = 5, 
+    quali.sup = c("steep_confi_2l", "risk_mean_confi_2l"),
+    #quanti.sup = "n_pstg",
+    graph = F
+    )
+#get eig3n-value from MCA results
+eig.val <- get_eigenvalue(snow_mca)
+
+#scree plot for eigen-value
+fviz_screeplot(snow_mca, addlabels = TRUE, ylim = c(0, 30),
+               barfill = "lightblue",
+               barcolor = "black")+
+  theme(panel.grid = element_blank(),
+        plot.title = element_text(face = "bold")) +
+  labs(title = "Scree plot for snow factors",
+       x = "Snow factor dimensions") 
+```
+
+Altogether, the first 2 dimensions captured 29.8% variability, indicating quite an amount of insights will be missed out using 2-dimension solution to represent the variation between variables. In the 2-dimension plot that I am going to generate in the following sections, some highly differentiated variables’ leverage in discrimination might be underestimated, and indistinct variables might be highly differentiated on some dimensions other than the first 2. The full results of this MCA should be interpreted on the basis of this knowledge.
+
+### Variable map
+
+(1) Biplot
+
+```{r fig.width= 10, fig.height=9}
+# biplot of individuals and variable categories:
+fviz_mca_biplot(snow_mca, 
+               repel = TRUE, # Avoid text overlapping (slow if many point)
+               ggtheme = theme_test(),
+               map = "colprincipal",
+               title = "Figure 1. Biplot for snow factor used",
+               col.quali.sup = "blue",
+               #col.quanti.sup = "blue",
+               col.ind = "grey",
+               addEllipses = T
+               #invisible = "ind"
+               )
+```
+
+(2) Correlation between variables and MCA principal dimensions 
+
+```{r fig.width= 10, fig.height=9}
+# the correlation between variables and MCA principal dimensions
+fviz_mca_var(
+  snow_mca, 
+  choice = "mca.cor", 
+  repel = TRUE, # Avoid text overlapping (slow)
+  ggtheme = theme_minimal(),
+  map = "colprincipal",
+  title = "Figure 2. Snow factor variable map",
+  col.quali.sup = "darkgreen",
+  #col.quanti.sup = "blue",
+  col.ind = "grey",
+  #addEllipses = T,
+  ellipse.level = 0.3
+)
+
+```
+
+(3) Factor variable category contributions to MCA principal dimensions
+
+```{r fig.width= 10, fig.height=9}
+#Snow factor variable category contributions to MCA principal dimensions
+fviz_mca_var(
+  snow_mca, 
+  col.var="grey", 
+  alpha.var = 0.5,
+  shape.var = 15, 
+  choice = "var.cat",
+  #choice = "var",
+  #choice = "mca.cor",
+  map = "colprincipal",
+  repel = TRUE, 
+  #select.var = list(contrib = 100),
+  #select.var = list(name = c("steep_confi_2l","risk_mean_confi_2l")),
+  col.quali.sup = "blue",
+  #col.quanti.sup = "darkgreen",
+  title = "Figure 3. Snow factor variable category map"
+             )
+
+```
+
+### Representation quality
+
+```{r fig.width= 10, fig.height=9}
+#Snow factor variable map, colored according to representation quality, top 10
+fviz_mca_var(
+  snow_mca, 
+  col.var = "cos2",
+  gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"), 
+  repel = TRUE, # Avoid text overlapping
+  ggtheme = theme_minimal(),
+  select.var = list(cos2 = 30),
+  col.quali.sup = "blue",
+  title = "Figure 4. Snow factor variable map, colored according to representation quality, top 10"
+  )
+```
+Variable such as presence of drum-like sounds is relatively well-represented by both dimensions since they are far away from the origin in both x and y axes.Variable such as absence of whumpf(s) and weak layer grain type are well-represented by one dimension instead of the other since they are far away from the origin in either x or y axis (for weak layer grain type, it is x axis). Variable categories such as NA in the variable of amount of rain is relatively well-represented by none of the dimensions since it is closed to origin from both directions.
+
+### Variable contribution to the variable map
+
+```{r fig.width= 10, fig.height=9}
+#Snow factor variable map, colored according to varialbe's contribution to MCA principal dimensions, top 10"
+fviz_mca_var(
+  snow_mca, 
+  col.var = "contrib",
+  gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"), 
+  repel = TRUE, # Avoid text overlapping
+  ggtheme = theme_minimal(),
+  select.var = list(contrib = 10),
+  col.quali.sup = "blue",
+  title = "Figure 4. Snow factor variable map, colored according to varialbe's contribution to MCA principal dimensions, top 10"
+  )
+```
+
+Above is a plot about the contributions of top 10 variables to both dimension one&two. Note that variables contribute highly to dimension one tend to show up in the far end in the direction of x axis while those contribute highly to dimension two will show up in the far end in the direction of y axis. The levels of contribution are also reflected by color gradients using the addition of the contrib of both dimensions. Note that variable category “Absence of drum-like sounds” (on bottom) contributes highly to dimension 2 but only has a color indicating moderate contribution. This is because its low contribution to dimension one drags its importance down.
+
+### Statistics
+
+```{r}
+#check the statistical table - variable representation quality
+data.frame(
+  name = data.frame(snow_mca$var$cos2) |> rownames(),
+  dim1 = data.frame(snow_mca$var$cos2) [,1] |> round(3), 
+  dim2 = data.frame(snow_mca$var$cos2) [,2] |> round(3)
+  ) |> 
+  arrange(
+    desc(dim1),
+    desc(dim2)
+    
+          ) |> 
+  DT::datatable(
+    caption = "Snow factor variable presentation quality"
+    )
+
+```
+
+```{r}
+#check the statistical table - variable contribution to principal dimensions
+data.frame(
+  name = data.frame(snow_mca$var$contrib) |> rownames(),
+  dim1 = data.frame(snow_mca$var$contrib) [,1] |> round(3), 
+  dim2 = data.frame(snow_mca$var$contrib) [,2] |> round(3)
+  ) |> 
+  arrange(
+    #desc(dim2)
+    desc(dim1)
+          ) |> 
+  DT::datatable(
+    caption = "Snow factor variable contribution"
+    )
+
+```
+
+## Terrain factor MCA
+
+MCA was performed in this section for terrain factor subset of data.
+
+```{r}
+kfc_terrain <-
+  kfc_terrain |>
+  filter(
+   is.na(t_f_idn),
+   is.na(t_f_none)
+    #af_none == "NotSelected"
+   ) |>
+  dplyr::select(
+    -t_f_idn,
+    -t_f_none
+  )
+
+# colnames(kfc_terrain)
+# kfc_terrain$t_f_none |> unique()
+```
+
+### Scree plot
+
+```{r}
+# perform MCA
+terrain_mca <- 
+  MCA(
+    kfc_terrain[,-1], 
+    #ncp = 5, 
+    quali.sup = c("steep_confi_2l", "risk_mean_confi_2l"),
+    #quanti.sup = "n_pstg",
+    graph = F
+    )
+
+#get eig3n-value from MCA results
+eig.val <- get_eigenvalue(terrain_mca)
+
+#scree plot for eigen-value
+fviz_screeplot(terrain_mca, addlabels = TRUE, ylim = c(0, 35),
+               barfill = "wheat",
+               barcolor = "black")+
+  theme(panel.grid = element_blank(),
+        plot.title = element_text(face = "bold")) +
+  labs(title = "Scree plot for terrain factors",
+       x = "Terrain factor dimensions") 
+```
+
+Altogether, the first 2 dimensions captured 56.2% variability, being much better than the variability explained by snow factors. However, it still indicates some insights will be missed out using 2-dimension solution to represent the variation between variables. In the 2-dimension plot that I am going to generate in the following sections, some highly differentiated variables’ leverage in discrimination might be underestimated, and indistinct variables might be highly differentiated on some dimensions other than the first 2. 
+
+### Variable map
+
+(1) Biplot
+
+```{r fig.width= 10, fig.height=9}
+# biplot of individuals and variable categories:
+fviz_mca_biplot(terrain_mca, 
+               repel = TRUE, # Avoid text overlapping (slow if many point)
+               ggtheme = theme_test(),
+               map = "colprincipal",
+               title = "Figure 1. Biplot for terrain factor used",
+               col.quali.sup = "blue",
+               #col.quanti.sup = "blue",
+               col.ind = "grey",
+               addEllipses = T
+               #invisible = "ind"
+               )
+```
+
+(2) Correlation between variables and MCA principal dimensions
+
+```{r fig.width= 10, fig.height=9}
+# the correlation between variables and MCA principal dimensions
+fviz_mca_var(
+  terrain_mca, 
+  choice = "mca.cor", 
+  repel = TRUE, # Avoid text overlapping (slow)
+  ggtheme = theme_minimal(),
+  map = "colprincipal",
+  title = "Figure 2. Terrain factor variable map",
+  col.quali.sup = "darkgreen",
+  #col.quanti.sup = "blue",
+  col.ind = "grey",
+  #addEllipses = T,
+  ellipse.level = 0.3
+)
+
+```
+
+(3) Variable contribution to MCA principal dimensions
+
+```{r fig.width= 10, fig.height=9}
+# factor variable category contributions to MCA principal dimensions
+fviz_mca_var(
+  terrain_mca, 
+  col.var="grey", 
+  alpha.var = 0.5,
+  shape.var = 15, 
+  choice = "var.cat",
+  #choice = "var",
+  #choice = "mca.cor",
+  map = "colprincipal",
+  repel = TRUE, 
+  #select.var = list(contrib = 100),
+  #select.var = list(name = c("steep_confi_2l","risk_mean_confi_2l")),
+  col.quali.sup = "blue",
+  #col.quanti.sup = "darkgreen",
+  title = "Figure 3. Terrain factor variable category map"
+             )
+
+```
+
+### Representation quality
+
+```{r fig.width= 10, fig.height=9}
+#factor variable map, colored according to representation quality
+fviz_mca_var(
+  terrain_mca, 
+  col.var = "cos2",
+  gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"), 
+  repel = TRUE, # Avoid text overlapping
+  ggtheme = theme_minimal(),
+  select.var = list(cos2 = 20),
+  col.quali.sup = "blue",
+  title = "Figure 4. Terrain factor variable map, colored according to representation quality, top 10"
+  )
+```
+
+Variable such as "the slope angel was relatively low" is relatively well-represented by both dimensions since they are far away from the origin in both x and y axes.Variable such as "the slope had safe spots" and "the slope was relatively small" are well-represented by one dimension instead of the other since they are far away from the origin in either x or y axis. Variable such as "The slope angel was relatively high" is relatively well-represented by none of the dimensions since it is closed to origin from both directions.
+
+### Variable contribution to MCA principal dimensions
+
+```{r fig.width= 10, fig.height=9}
+#factor variable map, colored according to varialbe's contribution to MCA principal dimensions
+fviz_mca_var(
+  terrain_mca, 
+  col.var = "contrib",
+  gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"), 
+  repel = TRUE, # Avoid text overlapping
+  ggtheme = theme_minimal(),
+  select.var = list(contrib = 10),
+  col.quali.sup = "blue",
+  title = "Figure 4. Terrain factor variable map, colored according to varialbe's contribution to MCA principal dimensions, top 10"
+  )
+```
+
+Above is a plot about the contributions of top 10 variables to both dimension one&two. Note that variables contribute highly to dimension one tend to show up in the far end in the direction of x axis while those contribute highly to dimension two will show up in the far end in the direction of y axis. The levels of contribution are also reflected by color gradients using the addition of the contrib of both dimensions. Note that variable category “The slope had safe spots” (on bottom) contributes highly to dimension 2 but only has a color indicating moderate contribution. This is because its low contribution to dimension one drags its importance down.
+
+### Statistics
+
+```{r}
+#check the statistical table - variable representation quality
+data.frame(
+  name = data.frame(terrain_mca$var$cos2) |> rownames(),
+  dim1 = data.frame(terrain_mca$var$cos2) [,1] |> round(3), 
+  dim2 = data.frame(terrain_mca$var$cos2) [,2] |> round(3)
+  ) |> 
+  arrange(
+    #desc(dim2)
+    desc(dim1)
+          ) |> 
+  DT::datatable(
+    caption = "Terrain factor variable presentation quality"
+    )
+
+```
+
+```{r}
+#check the statistical table - variable contribution to principal dimensions
+data.frame(
+  name = data.frame(terrain_mca$var$contrib) |> rownames(),
+  dim1 = data.frame(terrain_mca$var$contrib) [,1] |> round(3), 
+  dim2 = data.frame(terrain_mca$var$contrib) [,2] |> round(3)
+  ) |> 
+  arrange(
+    #desc(dim2)
+    desc(dim1)
+          ) |> 
+  DT::datatable(
+    caption = "Terrain factor variable contribution"
+    )
+```
+
+## Group factor MCA
+
+MCA was performed in this section for group factor subset of data.
+
+```{r}
+kfc_group <-
+  kfc_group |>
+  filter(
+   is.na(g_f_unfamiliar),
+   is.na(g_f_none)
+    #af_none == "NotSelected"
+   ) |>
+  dplyr::select(
+    -g_f_unfamiliar,
+    -g_f_none
+  )
+
+ colnames(kfc_group)
+# kfc_terrain$t_f_none |> unique()
+```
+
+### Scree plot
+
+```{r}
+# perform MCA
+group_mca <- 
+  MCA(
+    kfc_group[,-1], 
+    #ncp = 5, 
+    quali.sup = c("steep_confi_2l", "risk_mean_confi_2l"),
+    #quanti.sup = "n_pstg",
+    graph = F
+    )
+
+#get eig3n-value from MCA results
+eig.val <- get_eigenvalue(group_mca)
+
+#scree plot for eigen-value
+fviz_screeplot(group_mca, addlabels = TRUE, ylim = c(0, 35),
+               barfill = "wheat",
+               barcolor = "black")+
+  theme(panel.grid = element_blank(),
+        plot.title = element_text(face = "bold")) +
+  labs(title = "Scree plot for group factors",
+       x = "Group factor dimensions") 
+```
+
+Altogether, the first 2 dimensions captured 57.3% variability, being much better than the variability explained by snow factors. However, it still indicates some insights will be missed out using 2-dimension solution to represent the variation between variables. In the 2-dimension plot that I am going to generate in the following sections, some highly differentiated variables’ leverage in discrimination might be underestimated, and indistinct variables might be highly differentiated on some dimensions other than the first 2. 
+
+### Variable map
+
+(1) Biplot
+
+```{r fig.width= 10, fig.height=9}
+# biplot of individuals and variable categories:
+fviz_mca_biplot(group_mca, 
+               repel = TRUE, # Avoid text overlapping (slow if many point)
+               ggtheme = theme_test(),
+               map = "colprincipal",
+               title = "Figure 1. Biplot for group factor used",
+               col.quali.sup = "blue",
+               #col.quanti.sup = "blue",
+               col.ind = "grey",
+               addEllipses = T
+               #invisible = "ind"
+               )
+```
+
+(2) Correlation between variables and MCA principal dimensions
+
+```{r fig.width= 10, fig.height=9}
+# the correlation between variables and MCA principal dimensions
+fviz_mca_var(
+  group_mca, 
+  choice = "mca.cor", 
+  repel = TRUE, # Avoid text overlapping (slow)
+  ggtheme = theme_minimal(),
+  map = "colprincipal",
+  title = "Figure 2. Group factor variable map",
+  col.quali.sup = "darkgreen",
+  #col.quanti.sup = "blue",
+  col.ind = "grey",
+  #addEllipses = T,
+  ellipse.level = 0.3
+)
+
+```
+
+(3) Variable contribution to MCA principal dimensions
+
+```{r fig.width= 10, fig.height=9}
+# factor variable category contributions to MCA principal dimensions
+fviz_mca_var(
+  group_mca, 
+  col.var="grey", 
+  alpha.var = 0.5,
+  shape.var = 15, 
+  choice = "var.cat",
+  #choice = "var",
+  #choice = "mca.cor",
+  map = "colprincipal",
+  repel = TRUE, 
+  #select.var = list(contrib = 100),
+  #select.var = list(name = c("steep_confi_2l","risk_mean_confi_2l")),
+  col.quali.sup = "blue",
+  #col.quanti.sup = "darkgreen",
+  title = "Figure 3. Group factor variable category map"
+             )
+
+```
+
+### Representation quality
+
+```{r fig.width= 10, fig.height=9}
+#factor variable map, colored according to representation quality
+fviz_mca_var(
+  group_mca, 
+  col.var = "cos2",
+  gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"), 
+  repel = TRUE, # Avoid text overlapping
+  ggtheme = theme_minimal(),
+  select.var = list(cos2 = 10),
+  col.quali.sup = "blue",
+  title = "Figure 4. Group factor variable map, colored according to representation quality, top 10"
+  )
+
+```
+
+Variable such as "descending with a distance" is relatively well-represented by both dimensions since they are far away from the origin in both x and y axes.Variable such as "plan on where and how to ski" and "ascending with a distance" are well-represented by one dimension instead of the other since they are far away from the origin in either x or y axis. Variable such as "low confidence" is relatively well-represented by none of the dimensions since it is closed to origin from both directions.
+
+### Variable contribution to MCA principal dimensions
+
+```{r fig.width= 10, fig.height=9}
+#factor variable map, colored according to varialbe's contribution to MCA principal dimensions
+fviz_mca_var(
+  group_mca, 
+  col.var = "contrib",
+  gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"), 
+  repel = TRUE, # Avoid text overlapping
+  ggtheme = theme_minimal(),
+  select.var = list(contrib = 10),
+  col.quali.sup = "blue",
+  title = "Figure 4. Group factor variable map, colored according to varialbe's contribution to MCA principal dimensions, top 10"
+  )
+```
+
+Above is a plot about the contributions of top 10 variables to both dimension one&two. Note that variables contribute highly to dimension one tend to show up in the far end in the direction of x axis while those contribute highly to dimension two will show up in the far end in the direction of y axis. The levels of contribution are also reflected by color gradients using the addition of the contrib of both dimensions. Note that variable category “ascending with distance” (on bottom) contributes highly to dimension 2 but only has a color indicating low contribution. This is because its low contribution to dimension one drags its importance down.
+
+### Statistics
+
+```{r}
+#check the statistical table - variable representation quality
+data.frame(
+  name = data.frame(group_mca$var$cos2) |> rownames(),
+  dim1 = data.frame(group_mca$var$cos2) [,1] |> round(3), 
+  dim2 = data.frame(group_mca$var$cos2) [,2] |> round(3)
+  ) |> 
+  arrange(
+    #desc(dim2)
+    desc(dim1)
+          ) |> 
+  DT::datatable(
+    caption = "Group factor variable presentation quality"
+    )
+
+```
+
+```{r}
+#check the statistical table - variable contribution to principal dimensions
+data.frame(
+  name = data.frame(group_mca$var$contrib) |> rownames(),
+  dim1 = data.frame(group_mca$var$contrib) [,1] |> round(3), 
+  dim2 = data.frame(group_mca$var$contrib) [,2] |> round(3)
+  ) |> 
+  arrange(
+    #desc(dim2)
+    desc(dim1)
+          ) |> 
+  DT::datatable(
+    caption = "Group factor variable contribution"
+    )
+```
+
+## Network analysis
+
+In this section I used network to plot the structure representing a group of avalanche factor and relationships between them. A network structure consists of nodes and edges. Here, nodes represent avalanche factors while edges represent the fact that two factors were selected simultaneously by one respondent.
+
+We performed these steps:
+
+- Subset snow, terrain, group factors, and all factors (the combination of the previous three) selected, respectively.
+
+- For each subset, we transformed the data into a data frame with three columns: source, target, weight. Source and target tabulate  two factors that had been selected simultaneously by one respondents (without direction). Weight is how many times the two factors were co-selected among the respondents.  
+
+- We plotted three group of networks using the transformed subsets, where node is the factor and the thickness of lines reflects weight.
+
+- For snow and all factor subsets, we pruned the nodes according to node weight and degree (the number of all adjacent edges for a node). This improved the read-ability.
+
+### Prepare data
+
+```{r fig.height= 11, fig.width=15}
+to_net <- 
+  function(data){
+    df <- data.frame()
+    data <- t(data)
+    colnames(data) <- data[1,]
+    data <- data[-1,] |> data.frame()
+    for (i in 1:ncol(data)){
+      row_vec <- data |> pull(i)
+      row_vec <- na.rm(row_vec)
+      if (length(row_vec) <= 1) {
+        next
+      } else {
+        row_comb <- utils::combn(row_vec, 2) |> t() |> data.frame()
+        df <- rbind(df, row_comb)
+      }
+     
+    }
+    df <- df |> group_by(X1, X2) |> summarise(weight = n()) |> 
+      rename(source = X1, target = X2)
+    return(df)
+  }
+```
+
+```{r}
+library(igraph)
+link_snow <- to_net(kfc_snow[,1:28])
+link_terrain <- to_net(kfc_terrain[,1:8])
+link_group <- to_net(kfc_group[,1:7])
+link_factor <- to_net(kfc_factor[,-1])
+
+## remove snow factor based on degree
+rm_node_snow_degree <- 
+  link_snow |> 
+  group_by(source) |> 
+  summarise (degree = sum(weight)) |> 
+  arrange (desc(degree)) |> 
+  filter(degree<200) |> 
+  pull(source)
+
+link_snow_prune <- 
+  link_snow |> 
+  filter(!source %in% all_of(rm_node_snow_degree)&
+           !target %in% all_of(rm_node_snow_degree))
+
+## remove snow factor based on weight
+link_snow_prune2 <- 
+  link_snow |> 
+  arrange(desc(weight)) |> 
+  filter(weight>30)
+
+## reomove all-factor based on degree
+to_remove <- c(
+  "I am not familiar with these concepts / don't know",
+  "None of these factors",
+  "bigger_eq_4",
+  "high confidence",
+  "low confidence",
+  "samller_4",
+  "I am not familiar with these concepts"
+)
+link_factor <- 
+  link_factor |> 
+  filter(!target %in% all_of(to_remove)&
+           !source %in% all_of(to_remove))
+
+rm_node_factor_degree <- 
+  link_factor |> 
+  group_by(source) |> 
+  summarise (degree = sum(weight)) |> 
+  arrange (desc(degree)) |> 
+  filter(degree<600) |> 
+  pull(source)
+
+link_factor_prune <- 
+  link_factor |> 
+  filter(!source %in% all_of(rm_node_factor_degree)&
+           !target %in% all_of(rm_node_factor_degree)) 
+
+## remove all-factor based on weight
+link_factor_prune2 <- 
+  link_factor |> 
+  arrange(desc(weight)) |> 
+  filter(weight>50)
+```
+
+### Snow factor network
+
+```{r fig.height= 8, fig.width=15}
+network_snow_full <- graph_from_data_frame(d=link_snow, 
+                                 #vertices=nodes, 
+                                 directed=F) 
+
+
+network_snow <- graph_from_data_frame(d=link_snow_prune, 
+                                 #vertices=nodes, 
+                                 directed=F) 
+
+par(bg="gray", mfrow = c(1,2))
+deg_snow <- degree(network_snow_full, mode="all")
+plot(network_snow, edge.width=E(network_snow)$weight/5,
+     vertex.size=deg_snow^3/900,
+     vertex.label.cex = 0.7,
+     vertex.color= "steelblue",
+     vertex.label.color="black",
+     vertex.label.family="Palatino",
+     vertex.size=25,
+     edge.curved=0.3,
+     edge.color="white",
+     #layout=layout.sphere
+     layout = layout.fruchterman.reingold
+     )
+text(-0.3,1.1,"Figure1. Snow factors network (pruned by keeping nodes with \nnumber of adjacent edges > 200)",col="black", faimily = "Times", cex=0.9)
+legend(x=-0.7, y=-1, 
+       legend = "Line width is the co-occurrence of connected nodes;\nNode size reflects node degree (number of its adjacent edges)" , 
+       #pch=20 , pt.cex = 2, cex = 1,
+       cex = 0.9,
+       fill = "gray",
+       text.col="red" , horiz = F, 
+       border = "gray", 
+       bty = "n",
+       bg = "gray"
+       )
+###
+network_snow_2 <- graph_from_data_frame(d=link_snow_prune2, 
+                                 #vertices=nodes, 
+                                 directed=F) 
+
+
+deg_snow <- degree(network_snow_full, mode="all")
+plot(network_snow_2, edge.width=E(network_snow)$weight/5,
+     vertex.size=deg_snow^3/900,
+     vertex.label.cex = 0.7,
+     vertex.color= "steelblue",
+     vertex.label.color="black",
+     vertex.label.family="Palatino",
+     vertex.size=25,
+     edge.curved=0.3,
+     edge.color="white",
+     #layout=layout.sphere
+     layout = layout.fruchterman.reingold
+     )
+text(-0.3,1.1,"Figure2. Snow factors network(pruned by keeping edges with \nat least an occurrence of 30)",col="black", faimily = "Times", cex=0.9)
+legend(x=-0.7, y=-1, 
+       legend = "Line width reflects weight (the co-occurrence of connected nodes);\nNode size reflects node degree (number of its adjacent edges)" , 
+       #pch=20 , pt.cex = 2, 
+       cex = 0.9,
+       fill = "gray",
+       text.col="red" , horiz = F, 
+       border = "gray", 
+       bty = "n",
+       bg = "gray"
+       )
+```
+
+Note for the plots above
+
+**a.** The plot on the left was pruned by degree (number of adjacent lines). It reflects the factors that were more possibly co-selected with any other factors. They can be either the factors that the skiers would observe on matter how difficult they are to get, or factors that the skiers would anyway observe because of its simplicity or obviousness. These factors shown were mostly bull's eye cue, most possibly belonging to the latter. 
+
+**b.** The plot on the right was pruned by weight (occurrence of lines). It reflects that factor combinations that most frequently occurred. Solar radiation is the intermediary factor that connects both simple factors (e.g. absence of whumpfs) and technical factors (e.g. slab hardness)
+
+```{r fig.height= 8, fig.width=15}
+# distMat=distances(network_snow,weights=network_snow$weight)
+# distMat[which(distMat<10)] <- 0
+# 
+# distMat=as(distMat,'sparseMatrix')
+# distMat
+# fromInds <- row(distMat)[which(distMat != 0)]
+# toInds <- col(distMat)[which(!distMat == 0)]
+
+```
+
+### Terrain factor network
+
+```{r fig.height= 11, fig.width=15}
+network_terrain <- graph_from_data_frame(d=link_terrain, 
+                                 #vertices=nodes, 
+                                 directed=F) 
+
+par(bg="gray")
+deg <- degree(network_terrain, mode="all")
+plot(network_terrain, edge.width=E(network_terrain)$weight/5,
+     vertex.size=deg*5,
+     vertex.color= "steelblue",
+     vertex.label.color="black",
+     vertex.label.family="Palatino",
+     vertex.size=25,
+     edge.curved=0.3,
+     edge.color="white")
+text(-1.1,1.1,"Figure 2. Terrain factors network",col="black", faimily = "Times", cex=1.7)
+legend(x=0.4, y=-1, 
+       legend = "Line width is the co-occurrence of connected nodes;\nNode size reflects node degree (number of its adjacent edges)" , 
+       #pch=20 , pt.cex = 2, cex = 1,
+       fill = "gray",
+       text.col="red" , horiz = F, 
+       border = "gray", 
+       bty = "n",
+       bg = "gray"
+       )
+
+```
+Note for the plot above
+
+**a.** Big slope, safe spots, high angle and clean-runout zone were four factors strongly connected with each other. Their weights were almost same, indicating they might be functioning together very often. One exception was big slope and safe spots showing relatively weaker weights. It could be that some skiers believe one (both) can be the substitute for another (each other). 
+
+**b.** "No safe spots" had medium thickness edges with big slope, high angle and clean run-out (comparing to how "with safe spots" connects to the three). It shows people either used "no safe spots" or "safe spots" with the three as criteria, with the latter being a bit more popular.  
+
+### Group factor network
+
+```{r fig.height= 11, fig.width=15}
+
+network_group <- graph_from_data_frame(d=link_group, 
+                                 #vertices=nodes, 
+                                 directed=F) 
+
+par(bg="gray")
+deg <- degree(network_group, mode="all")
+plot(network_group, edge.width=E(network_group)$weight/5,
+     vertex.size=deg^3/10,
+     vertex.color= "steelblue",
+     vertex.label.color="black",
+     vertex.label.family="Palatino",
+     vertex.size=25,
+     edge.curved=0.3,
+     edge.color="white")
+text(-1.1,1.1,"Figure 3. Group  factors network",col="black", faimily = "Times", cex=1.7)
+legend(x=0.4, y=-1, 
+       legend = "Line width is the co-occurrence of connected nodes;\nNode size reflects node degree (number of its adjacent edges)" , 
+       #pch=20 , pt.cex = 2, cex = 1,
+       fill = "gray",
+       text.col="red" , horiz = F, 
+       border = "gray", 
+       bty = "n",
+       bg = "gray"
+       )
+```
+
+Note for the plot above
+
+**a.** Stoping at safe spot, descending one-at-a-time, clear directions, descending with distance, ascend with distance were five factors strongly connected with each other. Their weights were almost same, indicating they might be functioning together very often. One exception was ascending showing relatively weaker weights with others, especially with descending with a distance. It could be that some skiers believe it was less important.
+
+**b.** Two factors with "ascending" element were substantially less frequently connecting with other factors than their "descending counterparts". People worried about the safety during descending more than ascending. (Is it a good practice?)
+
+### All factor network
+
+```{r fig.height= 8, fig.width=15}
+network_factor_full <- graph_from_data_frame(d=link_factor, 
+                                 #vertices=nodes, 
+                                 directed=F) 
+
+
+network_factor <- graph_from_data_frame(d=link_factor_prune, 
+                                 #vertices=nodes, 
+                                 directed=F) 
+
+par(bg="gray", mfrow = c(1,2))
+deg_factor <- degree(network_factor_full, mode="all")
+plot(network_factor, edge.width=E(network_factor)$weight/5,
+     vertex.size=deg_factor/2,
+     vertex.color= "steelblue",
+     vertex.label.color="black",
+     vertex.label.family="Palatino",
+     vertex.label.cex = 0.7,
+     vertex.size=25,
+     edge.curved=0.3,
+     edge.color="white",
+     #layout=layout.sphere
+     layout = layout.fruchterman.reingold
+     )
+text(-0.3,1.1,"Figure1. All factors network (pruned by keeping nodes with \nnumber of adjacent edges > 500)",col="black", faimily = "Times", cex=0.9)
+legend(x=0.2, y=-1, 
+       legend = "Line width is the co-occurrence of connected nodes;\nNode size reflects node degree (number of its adjacent edges)" , 
+       #pch=20 , pt.cex = 2, cex = 1,
+       fill = "gray",
+       text.col="red" , horiz = F, 
+       border = "gray", 
+       bty = "n",
+       bg = "gray"
+       )
+###
+network_factor_2 <- graph_from_data_frame(d=link_factor_prune2, 
+                                 #vertices=nodes, 
+                                 directed=F) 
+
+
+deg_factor <- degree(network_factor_full, mode="all")
+plot(network_factor_2, edge.width=E(network_factor)$weight/5,
+     vertex.size=deg_factor/2,
+     vertex.color= "steelblue",
+     vertex.label.color="black",
+     vertex.label.cex = 0.7,
+     vertex.label.family="Palatino",
+     vertex.size=25,
+     edge.curved=0.3,
+     edge.color="white",
+     #layout=layout.sphere
+     layout = layout.fruchterman.reingold
+     )
+text(-0.3,1.1,"Figure2. All factors network(pruned by keeping edges with \nat least an occurrence of 50)",col="black", faimily = "Times", cex=0.9)
+legend(x=0.2, y=-1, 
+       legend = "Line width reflects weight (the co-occurrence of connected nodes);\nNode size reflects node degree (number of its adjacent edges)" , 
+       #pch=20 , pt.cex = 2, cex = 1,
+       fill = "gray",
+       text.col="red" , horiz = F, 
+       border = "gray", 
+       bty = "n",
+       bg = "gray"
+       )
+```
+
+Note for the plots above
+
+**a.** The plot on the left was pruned by degree (number of adjacent lines). It reflects the factors that were more possibly co-selected with any other factors. They can be either the factors that the skiers would observe on matter how difficult they are to get, or factors that the skiers would anyway observe because of its simplicity or obviousness. These factors shown were mostly bull's eye cue, most possibly belonging to the latter. 
+
+**b.** The plot on the right was pruned by weight (occurrence of lines). It reflects that factor combinations that most frequently occurred. Factor "the slope was relatively high" is the intermediary factor that connects snow factors and terrian+group factors.
+
+# Group-level Analsyis 
+
+In this section, we performed similar analysis as previously done but transformed the data into group-level. We did this taking the mean of dependent variables among skiers from one same group. Since most of the dependent variables are ordinal instead of numeric, doing this requires strong assumptions, with risk of increasing type I error. We should interpet the results with caution. The dependent variables are:
+
+- **risk_hi_est** Likelihood estimates for a dangerous avalanche (values:1,2) 
+- **risk_hi_confi** Confidence in the estimate above.(values:1,2,3)
+- **risk_low_est** Likelihood estimates for a less dangerous avalanche(values:1,2)
+- **risk_low_confi** Confidence in the estimate above.(values:1,2,3)
+- **risk_mean_confi** Mean value for the above two estimates (the mean of above two confidence)
+- **outcome_dp** Self-reported outcome of decision point. (1,2,3)
+- **steep_confi** Confidence in my steepness estimates.(1,2,3,4,5,6)
+
+Besides, we also took the group mean of each avalanche factor selected by assigning individual value of selected/not-selected as 1/0. The mean can indicate the uniformity, goodness or dependence of the group in using the factor. Again doing this requires strong assumptions, with risk of increasing type I error.
+
+Then, we did the following analysis
+
+- Plotted correlation matrix. For detailed procedure, please refer to the description in individual-level matrix, since they are basically the same. One exception was we only selected the dependent variables that can make sense to group-level analysis into the matrix. 
+
+- Principal component analysis. It is the MCA's counterpart for numeric variables. Since the factor selected had been converted into group-level numeric values, we used PCA instead of MCA. The procedure and results interpretation rules are basically the same.  
+
+## Prepare data for group-level analysis
+
+### Full data set
+
+```{r}
+kfc_bygrp <- 
+  kfc |> 
+  dplyr::select(
+    #group_nr,
+    starts_with("af_"),
+    starts_with("t_f"),
+    starts_with("g_f_"),
+    risk_mean_confi,
+    steep_confi,
+    risk_hi_confi,
+    risk_low_confi,
+    risk_hi_est,
+    risk_low_est
+  ) |> 
+  naniar::replace_with_na_all(~.x == "-99") %>%
+  mutate(
+    across(where(is.factor),
+           as.character),
+    across(!where(is.numeric),
+           ~replace(., !is.na(.), "1")),
+    across(!where(is.numeric),
+           ~replace(., is.na(.), "0"))
+  ) |> 
+  mutate(
+    across(everything(),
+           as.numeric)
+  ) |> 
+  cbind(kfc$group_nr) |> 
+  cbind(kfc$group_category) |> 
+  rename(
+    group_nr = "kfc$group_nr",
+    group_category = "kfc$group_category"
+  ) |> 
+  filter(group_category != "full response single") |> 
+  dplyr::select(
+    group_nr,
+    everything(),
+    -group_category
+  ) |> 
+  group_by(
+    group_nr
+    ) |> 
+   summarise_all(mean, na.rm =T) |> 
+  filter(
+    !is.na(group_nr)
+  )
+```
+
+### Snow factor subset
+
+```{r}
+kfc_bygrp_snow <- 
+  kfc_bygrp |> 
+  dplyr::select(
+    starts_with("af_"),
+    risk_mean_confi,
+    steep_confi,
+    risk_hi_confi,
+    risk_low_confi,
+    risk_hi_est,
+    risk_low_est
+  )
+```
+
+### Terrain factor subset
+
+```{r}
+kfc_bygrp_terrain <- 
+  kfc_bygrp |> 
+  dplyr::select(
+    starts_with("t_f_"),
+    risk_mean_confi,
+    steep_confi,
+    risk_hi_confi,
+    risk_low_confi,
+    risk_hi_est,
+    risk_low_est
+  )
+```
+
+### Group factor subset
+
+```{r}
+kfc_bygrp_group <- 
+  kfc_bygrp |> 
+  dplyr::select(
+    starts_with("g_f_"),
+    risk_mean_confi,
+    steep_confi,
+    risk_hi_confi,
+    risk_low_confi,
+    risk_hi_est,
+    risk_low_est
+  )
+```
+
+## Group-level correlation matrix
+
+```{r}
+fig5.names <- make.names(
+  c(
+    "confi mean lklihd est.",
+    "confi steep est.",
+    "none snow factors",
+    "presence avativity",
+    "absence avativity",
+    "presence whumpf",
+    "absence whumpf",
+    "presence shooting craks",
+    "absence shooting craks",
+    "presence drumlike sound",
+    "absence drumlike sound",
+    "ski track"
+  )
+)
+
+fig6.names <- make.names(
+  c(
+    "confi mean lklihd est.",
+    "confi steep est.",
+    "urban snw",
+    "viscue wind-drifted snw",
+    "wind speed",
+    "amount wind-drifed snw",
+    "amount new snw",
+    "amount rain",
+    "fast warming",
+    "temperature 24 to 72",
+    "solar radiation",
+    "slab hardness"
+  )
+)
+
+fig7.names <- 
+  make.names(
+    c(
+      "confi mean lklihd est.",
+      "confi steep est.",
+      "hrdnss diff layers",
+      "hrdnss underly snw",
+      "failure plane quality",
+      "weak layer distance",
+      "weak layer thickness",
+      "weak layer grain type",
+      "weak layer grain size",
+      "formal tests"
+    )
+  )
+```
+
+### Group-level snow factor matrix
+
+```{r fig.height= 11, fig.width=15}
+kfc_bygrp_snow[,
+               c(which(colnames(kfc_bygrp_snow) == "risk_mean_confi"), 
+                 which(colnames(kfc_bygrp_snow) == "steep_confi"), 
+                 1:10)
+] |> 
+  ggpairs(lower = 
+            list(continuous = my.fun.smooth), #lower half show points with fitted line
+          diag =
+            list(continuous = my.fun.density), #diagonal grids show density plots
+          upper =
+            list(continuous = wrap(cor_func,method = 'spearman', symbol = "Corr:\n")),
+          columnLabels = gsub('.', ' ',fig5.names, fixed = T),
+          labeller = label_wrap_gen(14)
+  ) +
+  theme (plot.title = element_text(
+    size = 18,  #adjust title visuals
+    face = "bold"),
+    #panel.background  = element_rect(
+    #color = "black", 
+    # size = 1.5),
+    plot.caption = element_text(color = "red", face = "italic", size = 12),
+    strip.background = element_rect(color = "black", fill = "lightblue", size = 2),
+    strip.text.y = element_text(angle = 0, size = 11, face = "bold", color = "black"),
+    strip.text.x = element_text(angle = 0, size = 11, face = "bold", color = "black")) +
+  labs(caption = "Regressed by lowess;
+                  Red frame indicates |r|>0.3; Yellow background indicates significant p
+                  Values are scaled mean of the number of members who select the factor in a group",
+       title = "Figure 1 group-level snow factor score (1st col/row is outcome varialbe)")
+```
+Note for the above plot:
+
+**a.** Group-level score (group mean of factor selected as 1) for using the snow factor "absence of avalanche activity" is negatively correlated with the steepness est confidence. Is the factor indicating less careful minds?
+
+
+```{r fig.height= 11, fig.width=15}
+library(GGally)
+# matrix continued
+kfc_bygrp_snow[,
+               c(which(colnames(kfc_bygrp_snow) == "risk_mean_confi"), 
+                 which(colnames(kfc_bygrp_snow) == "steep_confi"),
+                 11:20)] |> 
+  ggpairs(lower = 
+            list(continuous = my.fun.smooth), #lower half show points with fitted line
+          diag =
+            list(continuous = my.fun.density), #diagonal grids show density plots
+          upper =
+            list(continuous = wrap(cor_func,method = 'spearman', symbol = "Corr:\n")),
+          columnLabels = gsub('.', ' ',fig6.names, fixed = T),
+          labeller = label_wrap_gen(14)
+  ) +
+  theme (plot.title = element_text(
+    size = 18,  #adjust title visuals
+    face = "bold"),
+    #panel.background  = element_rect(
+    #color = "black", 
+    # size = 1.5),
+    plot.caption = element_text(color = "red", face = "italic", size = 12),
+    strip.background = element_rect(color = "black", fill = "lightblue", size = 2),
+    strip.text.y = element_text(angle = 0, size = 11, face = "bold", color = "black"),
+    strip.text.x = element_text(angle = 0, size = 11, face = "bold", color = "black")) +
+  labs(caption = "Regressed by lowess;
+                  Red frame indicates |r|>0.3; Yellow background indicates significant p
+                  Values are scaled mean of the number of members who select the factor in a group",
+       title = "Figure 2 group-level snow factor score continued (1st col/row is outcome varialbe)")
+```
+
+Note for the above plot:
+
+**a.** Group-level score (group mean of factor selected as 1) for using the snow factor "none of these factors" is positively correlated with the steepness est confidence. This is not quite intuitive to interpret. We need to first compare the steepness estimate with group truth to separate real confidence and blind confidence. 
+
+**b.** Group-level score for using the snow factor "absence of shooting cracks", "presence of shooting cracks" and "absence of drum-like sound" are positively correlated with the steepness est confidence. 
+
+```{r fig.height= 11, fig.width=15}
+kfc_bygrp_snow[,
+               c(which(colnames(kfc_bygrp_snow) == "risk_mean_confi"), 
+                 which(colnames(kfc_bygrp_snow) == "steep_confi"),
+                 21:28)] |> 
+  ggpairs(lower = 
+            list(continuous = my.fun.smooth), #lower half show points with fitted line
+          diag =
+            list(continuous = my.fun.density), #diagonal grids show density plots
+          upper =
+            list(continuous = wrap(cor_func,method = 'spearman', symbol = "Corr:\n")),
+          columnLabels = gsub('.', ' ',fig7.names, fixed = T),
+          labeller = label_wrap_gen(14)
+  ) +
+  theme (plot.title = element_text(
+    size = 18,  #adjust title visuals
+    face = "bold"),
+    #panel.background  = element_rect(
+    #color = "black", 
+    # size = 1.5),
+    plot.caption = element_text(color = "red", face = "italic", size = 12),
+    strip.background = element_rect(color = "black", fill = "lightblue", size = 2),
+    strip.text.y = element_text(angle = 0, size = 11, face = "bold", color = "black"),
+    strip.text.x = element_text(angle = 0, size = 11, face = "bold", color = "black")) +
+  labs(caption = "Regressed by lowess;
+                  Red frame indicates |r|>0.3; Yellow background indicates significant p
+                  Values are scaled mean of the number of members who select the factor in a group",
+       title = "Figure 3 group-level snow factor score continued (1st col/row is outcome varialbe)")
+```
+
+Note for the above plot:
+
+**a.** None of the group-level score (group mean of factor selected as 1) correlated significantly with the dependent variables. 
+
+**b.** The scores (group mean of factor selected as 1) correlated with each other very nicely. Note that the factors in this matrix are mostly technical factors. 
+
+
+## Group-level snow factor PCA
+
+### Scree plot
+
+```{r}
+rownames(kfc_bygrp_snow) <- kfc_bygrp$group_nr
+```
+
+```{r}
+# perform PCA
+kfc_bygrp_snow <- scale(kfc_bygrp_snow) 
+snow_bygrp_pca <- 
+PCA(
+    kfc_bygrp_snow, 
+    #ncp = 5, 
+    quanti.sup = 
+      c(
+        "risk_mean_confi", 
+        "steep_confi",
+        "risk_hi_confi",
+        "risk_low_confi",
+        "risk_hi_est",
+        "risk_low_est"
+        ),
+    #quanti.sup = "n_pstg",
+    graph = F
+  )
+
+#get eig3n-value from MCA results
+eig.val <- get_eigenvalue(snow_mca)
+
+#scree plot for eigen-value
+fviz_screeplot(snow_bygrp_pca, 
+               addlabels = TRUE, 
+               ylim = c(0, 28),
+               barfill = "lightblue",
+               barcolor = "black")+
+  theme(panel.grid = element_blank(),
+        plot.title = element_text(face = "bold")) +
+  labs(title = "Scree plot for group-level snow factors",
+       x = "Group-level snow factor dimensions") 
+```
+
+First two dimensions explain 33.7% variability.
+
+### Variable map
+
+(1) Biplot
+
+```{r fig.width= 10, fig.height=9}
+# biplot of individuals and variable categories:
+fviz_pca_biplot(
+  snow_bygrp_pca, 
+  repel = TRUE, # Avoid text overlapping (slow if many point)
+  ggtheme = theme_test(),
+  #map = "colprincipal",
+  title = "Figure 1. Group-level biplot for snow factor used",
+  col.quanti.sup = "blue",
+  #col.quanti.sup = "blue",
+  col.ind = "grey",
+  addEllipses = T
+  #invisible = "ind"
+)
+```
+
+Notes for the plot above:
+
+**a.** The first dimension mostly comprises technical factors such as formal test.
+
+**b.** The second dimension mostly comprises easy-to-observe factors such as presence of avalanche activity.
+
+**c.** Avalanche estimate confidence can be reflected by the two dimensions.
+
+**d.** Slope steepness confidence can be reflected by the first dimension.
+
+**e.** Quite a number of respondents performed less satifactorily in these two dimensions.
+
+(2) Group-level snow factor variable map 
+
+```{r fig.width= 10, fig.height=9}
+#Snow factor variable map
+fviz_pca_var(
+  snow_bygrp_pca, 
+  col.var="grey", 
+  #alpha.var = 0.5,
+  #shape.var = 15, 
+  #choice = "var",
+  #choice = "mca.cor",
+  #map = "colprincipal",
+  repel = TRUE, 
+  #select.var = list(contrib = 100),
+  #select.var = list(name = c("steep_confi_2l","risk_mean_confi_2l")),
+  #col.quali.sup = "blue",
+  col.quanti.sup = "darkgreen",
+  title = "Figure 2. Group-level snow factor variable map"
+             )
+```
+
+(3) Variable representation quality
+
+```{r fig.width= 10, fig.height=9}
+#Snow factor variable map, colored according to representation quality, top 10
+fviz_pca_var(
+  snow_bygrp_pca, 
+  col.var = "cos2",
+  gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"), 
+  repel = TRUE, # Avoid text overlapping
+  ggtheme = theme_minimal(),
+  select.var = list(cos2 = 20),
+  col.quali.sup = "blue",
+  title = "Figure 4. Group-level snow factor variable map, colored according to representation quality"
+  )
+```
+
+Note:
+
+**a.** There is a trend that the more technical a factor is, the better it is represented by the first dimension.
+
+**b.** The factors strongly represented by dimension oneusually involve weak layer
+
+**c.** The factors strongly represented by dimension two usually involve absence of...
+
+(4) Case map
+
+```{r fig.width= 10, fig.height=9}
+#Snow factor variable map, colored according to representation quality, top 10
+fviz_pca_ind(
+  snow_bygrp_pca, 
+  col.var = "cos2",
+  gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"), 
+  repel = TRUE, # Avoid text overlapping
+  ggtheme = theme_minimal(),
+  select.var = list(cos2 = 20),
+  col.quali.sup = "blue",
+  title = "Figure 4. Group-level snow factor case map"
+  )
+```
+
+Note:
+
+**a.** There are some very attentive skiing groups (high on dimension one), some very skillful skiing groups  (high one dimension two) and some brave skiing groups  (low on both)
+
+### Statistics
+
+```{r}
+#check the statistical table - variable representation quality
+data.frame(
+  name = data.frame(snow_bygrp_pca$var$cos2) |> rownames(),
+  dim1 = data.frame(snow_bygrp_pca$var$cos2) [,1] |> round(3), 
+  dim2 = data.frame(snow_bygrp_pca$var$cos2) [,2] |> round(3)
+  ) |> 
+  arrange(
+    desc(dim1),
+    desc(dim2)
+    
+          ) |> 
+  DT::datatable(
+    caption = "Group-level snow factor variable contribution"
+    )
+```
+
+```{r}
+#check the statistical table - variable contribution to principal dimensions
+data.frame(
+  name = data.frame(snow_bygrp_pca$var$contrib) |> rownames(),
+  dim1 = data.frame(snow_bygrp_pca$var$contrib) [,1] |> round(3), 
+  dim2 = data.frame(snow_bygrp_pca$var$contrib) [,2] |> round(3)
+  ) |> 
+  arrange(
+    #desc(dim2)
+    desc(dim1)
+          ) |> 
+  DT::datatable(
+    caption = "Group-level snow factor variable contribution"
+    )
+```
+
+##########
+
+## Group-level terrain factor PCA
+
+### Scree plot
+
+```{r}
+rownames(kfc_bygrp_terrain) <- kfc_bygrp$group_nr
+```
+
+```{r}
+# perform MCA
+kfc_bygrp_terrain <- scale(kfc_bygrp_terrain) 
+terrain_bygrp_pca <- 
+PCA(
+    kfc_bygrp_terrain, 
+    #ncp = 5, 
+    quanti.sup = 
+      c(
+        "risk_mean_confi",
+        "steep_confi",
+        "risk_hi_confi",
+        "risk_low_confi",
+        "risk_hi_est",
+        "risk_low_est"
+        ),
+    #quanti.sup = "n_pstg",
+    graph = F
+  )
+
+#get eig3n-value from MCA results
+eig.val <- get_eigenvalue(terrain_bygrp_pca)
+
+#scree plot for eigen-value
+fviz_screeplot(
+  terrain_bygrp_pca, 
+  addlabels = TRUE, 
+  ylim = c(0, 40),
+  barfill = "lightblue",
+  barcolor = "black")+
+  theme(panel.grid = element_blank(),
+        plot.title = element_text(face = "bold")) +
+  labs(title = "Scree plot for group-level terrain factors",
+       x = "Group level terrain factor dimensions") 
+```
+
+The first two dimensions explained 51.8% variablity.
+
+### Variable map
+
+(1) Biplot
+
+```{r fig.width= 10, fig.height=9}
+# biplot of individuals and variable categories:
+fviz_pca_biplot(
+  terrain_bygrp_pca, 
+  repel = TRUE, # Avoid text overlapping (slow if many point)
+  ggtheme = theme_test(),
+  #map = "colprincipal",
+  title = "Figure 1. Group-level biplot for terrain factor used",
+  col.quanti.sup = "blue",
+  #col.quanti.sup = "blue",
+  col.ind = "grey",
+  addEllipses = T
+  #invisible = "ind"
+)
+```
+
+Note:
+
+**a.** High angle, big slope, safe spot and clean run-out loads highly onto the first dimension.
+
+**b.** Low angle, small slope and no safe spot highly onto the second dimension.
+
+**c.** This refects two type of mentality during avalanche assessment?
+
+(2) Group-level snow factor variable map
+
+```{r fig.width= 10, fig.height=9}
+#Snow factor variable map
+fviz_pca_var(
+  terrain_bygrp_pca, 
+  col.var="grey", 
+  #alpha.var = 0.5,
+  #shape.var = 15, 
+  #choice = "var",
+  #choice = "mca.cor",
+  #map = "colprincipal",
+  repel = TRUE, 
+  #select.var = list(contrib = 100),
+  #select.var = list(name = c("steep_confi_2l","risk_mean_confi_2l")),
+  #col.quali.sup = "blue",
+  col.quanti.sup = "darkgreen",
+  title = "Figure 2. Terrain factor variable map"
+             )
+```
+
+Note:
+
+**a.** Interpretation is the same with the previous plot.
+
+(3) Variable representation quality
+
+```{r fig.width= 10, fig.height=9}
+#Snow factor variable map, colored according to representation quality, top 10
+fviz_pca_var(
+  terrain_bygrp_pca, 
+  col.var = "cos2",
+  gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"), 
+  repel = TRUE, # Avoid text overlapping
+  ggtheme = theme_minimal(),
+  select.var = list(cos2 = 20),
+  col.quali.sup = "blue",
+  title = "Figure 4. Group-level terrain factor variable map, colored according to representation quality"
+  )
+```
+
+Note:
+
+**a.** Safe.., high.., big.. were well represented by the first dimensions.
+
+(4) Case map
+
+```{r fig.width= 10, fig.height=9}
+#Snow factor variable map, colored according to representation quality, top 10
+fviz_pca_ind(
+  terrain_bygrp_pca, 
+  col.var = "cos2",
+  gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"), 
+  repel = TRUE, # Avoid text overlapping
+  ggtheme = theme_minimal(),
+  select.var = list(cos2 = 20),
+  col.quali.sup = "blue",
+  title = "Figure 4. Group-level terrain factor case map"
+  )
+```
+
+Note:
+
+**a.** Skiing groups can be very high/low on both dimensions.
+
+### Statistics
+
+```{r}
+#check the statistical table - variable representation quality
+data.frame(
+  name = data.frame(terrain_bygrp_pca$var$cos2) |> rownames(),
+  dim1 = data.frame(terrain_bygrp_pca$var$cos2) [,1] |> round(3), 
+  dim2 = data.frame(terrain_bygrp_pca$var$cos2) [,2] |> round(3)
+  ) |> 
+  arrange(
+    desc(dim1)
+    #desc(dim2)
+    
+          ) |> 
+  DT::datatable(
+    caption = "Group-level terrain factor variable presentation quality"
+    )
+```
+
+```{r}
+#check the statistical table - variable contribution to principal dimensions
+data.frame(
+  name = data.frame(terrain_bygrp_pca$var$contrib) |> rownames(),
+  dim1 = data.frame(terrain_bygrp_pca$var$contrib) [,1] |> round(3), 
+  dim2 = data.frame(terrain_bygrp_pca$var$contrib) [,2] |> round(3)
+  ) |> 
+  arrange(
+    #desc(dim2)
+    desc(dim1)
+          ) |> 
+  DT::datatable(
+    caption = "Group-level terrain factor variable contribution"
+    )
+```
+
+## Group-level group factor PCA
+
+### Scree plot
+
+```{r}
+rownames(kfc_bygrp_group) <- kfc_bygrp$group_nr
+```
+
+```{r}
+# perform MCA
+kfc_bygrp_group <- scale(kfc_bygrp_group) 
+group_bygrp_pca <- 
+  PCA(
+    kfc_bygrp_group, 
+    #ncp = 5, 
+    quanti.sup = c(
+      "risk_mean_confi",
+      "steep_confi",
+      "risk_hi_confi",
+      "risk_low_confi",
+      "risk_hi_est",
+      "risk_low_est"
+    ),
+    #quanti.sup = "n_pstg",
+    graph = F
+  )
+
+#get eig3n-value from MCA results
+eig.val <- get_eigenvalue(group_bygrp_pca)
+
+#scree plot for eigen-value
+fviz_screeplot(
+  group_bygrp_pca, 
+  addlabels = TRUE, 
+  ylim = c(0, 40),
+  barfill = "lightblue",
+  barcolor = "black")+
+  theme(panel.grid = element_blank(),
+        plot.title = element_text(face = "bold")) +
+  labs(title = "Scree plot for group-level group factors",
+       x = "Group-level group factor dimensions") 
+```
+
+52.4% variability was explained by the first two dimensions.
+
+### Variable map
+
+(1) Biplot
+
+```{r fig.width= 10, fig.height=9}
+# biplot of individuals and variable categories:
+fviz_pca_biplot(group_bygrp_pca, 
+               repel = TRUE, # Avoid text overlapping (slow if many point)
+               ggtheme = theme_test(),
+               #map = "colprincipal",
+               title = "Figure 1. Group-level biplot for snow factor used",
+               col.quanti.sup = "blue",
+               #col.quanti.sup = "blue",
+               col.ind = "grey",
+               addEllipses = T
+               #invisible = "ind"
+               )
+```
+
+(2) Group-level snow factor variable map
+
+```{r fig.width= 10, fig.height=9}
+#group factor variable map
+fviz_pca_var(
+  group_bygrp_pca, 
+  col.var="grey", 
+  #alpha.var = 0.5,
+  #shape.var = 15, 
+  #choice = "var",
+  #choice = "mca.cor",
+  #map = "colprincipal",
+  repel = TRUE, 
+  #select.var = list(contrib = 100),
+  #select.var = list(name = c("steep_confi_2l","risk_mean_confi_2l")),
+  #col.quali.sup = "blue",
+  col.quanti.sup = "darkgreen",
+  title = "Figure 2. Grounp-level group factor variable map"
+             )
+```
+
+(3) Variable representation quality
+
+```{r fig.width= 10, fig.height=9}
+#group factor variable map, colored according to representation quality, top 10
+fviz_pca_var(
+  group_bygrp_pca, 
+  col.var = "cos2",
+  gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"), 
+  repel = TRUE, # Avoid text overlapping
+  ggtheme = theme_minimal(),
+  select.var = list(cos2 = 20),
+  col.quali.sup = "blue",
+  title = "Figure 4. Group-level group factor variable map, colored according to representation quality"
+  )
+```
+
+(4) Case map
+
+```{r fig.width= 10, fig.height=9}
+#group factor variable map, colored according to representation quality, top 10
+fviz_pca_ind(
+  terrain_bygrp_pca, 
+  col.var = "cos2",
+  gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"), 
+  repel = TRUE, # Avoid text overlapping
+  ggtheme = theme_minimal(),
+  select.var = list(cos2 = 20),
+  col.quali.sup = "blue",
+  title = "Figure 4. Group-level group factor case map"
+  )
+```
+
+### Statistics
+
+```{r}
+#check the statistical table - variable representation quality
+data.frame(
+  name = data.frame(group_bygrp_pca$var$cos2) |> rownames(),
+  dim1 = data.frame(group_bygrp_pca$var$cos2) [,1] |> round(3), 
+  dim2 = data.frame(group_bygrp_pca$var$cos2) [,2] |> round(3)
+  ) |> 
+  arrange(
+    desc(dim1)
+    #desc(dim2)
+    
+          ) |> 
+  DT::datatable(
+    caption = "Group-level group factor variable presentation quality"
+    )
+```
+
+```{r}
+#check the statistical table - variable contribution to principal dimensions
+data.frame(
+  name = data.frame(terrain_bygrp_pca$var$contrib) |> rownames(),
+  dim1 = data.frame(terrain_bygrp_pca$var$contrib) [,1] |> round(3), 
+  dim2 = data.frame(terrain_bygrp_pca$var$contrib) [,2] |> round(3)
+  ) |> 
+  arrange(
+    #desc(dim2)
+    desc(dim1)
+          ) |> 
+  DT::datatable(
+    caption = "Group-level tnow factor variable contribution"
+    )
+```
+
+## Group-level k-means clustering
+
+In this section we sought to cluster the skiing groups according to the avalanche factors they selected. 
+
+```{r}
+library(MASS)
+library(tidyverse)
+kfc_bygrp_factors <- 
+kfc_bygrp |> 
+  dplyr::select(
+    group_nr,
+    starts_with("af_"),
+    starts_with("t_f_"),
+    starts_with("g_f_")
+  ) 
+group_nr <- kfc_bygrp_factors$group_nr
+kfc_bygrp_factors$group_nr <- NULL
+rownames(kfc_bygrp_factors) <- group_nr
+
+kfc_bygroup_f_s <- as.data.frame(scale(kfc_bygrp_factors))
+
+set.seed(20230525) #this is the date I carry out the analysis
+
+# determine the number of clusters
+k_max <- 20
+```
+
+### Determine the optimal number of clusters
+
+With the scree plot below we tried to determined optimal number of clusters.
+
+```{r}
+# calculate the total within sum of squares
+twcss <- sapply(1:k_max, function(k){kmeans(kfc_bygroup_f_s, k)$tot.withinss})
+
+qplot(x = 1:k_max, y = twcss, geom = 'line')+
+  geom_line(aes(x = 3, color = "red")) +
+  annotate("text", 
+           label = 
+             "←Elbow effect happens here", 
+           x = 6.5, y =3800, color = "red") +
+  labs(title = "Trends of within-cluster sum-of-square with increasing number of k",
+       x =  "Number of k",
+       y = "With-cluster SS")+
+  theme(legend.position = "none", 
+        panel.background = element_rect(color = "black"))
+```
+We determined an optimal number of clusters as 3. 
+
+### K-means clustering with 3 clusters
+
+```{r}
+km <- kmeans(kfc_bygroup_f_s, centers = 3)
+kfc_bygroup_f_s$km.cluster <- km$cluster
+lda.km <- lda(km.cluster ~ ., data = kfc_bygroup_f_s) 
+```
+
+```{r}
+# the function for lda biplot arrows
+lda.arrows <- function(x, myscale = 1, arrow_heads = 0.1, color = "red", tex = 0.75, choices = c(1,2)){
+  heads <- coef(x)
+  arrows(x0 = 0, y0 = 0, 
+         x1 = myscale * heads[,choices[1]], 
+         y1 = myscale * heads[,choices[2]], col=color, length = arrow_heads)
+  text(myscale * heads[,choices], labels = row.names(heads), 
+       cex = tex, col=color, pos=3)
+}
+```
+
+Now we had generated the clusters. The matrices below can help understand each ava factor's role in separating the 3 clusters.
+
+```{r,fig.height=10, fig.width=15}
+my.fun.km <- function(data, mapping,...){ #define arguments
+  p <- ggplot(data = data, mapping = mapping) + #pass arguments
+    geom_point(size = 0.3, 
+               color = factor(km$cluster),
+               ...) + #define points size and color
+    stat_ellipse(geom = "polygon", mapping = mapping, alpha = 0.5)
+     #calculate an ellipse layer that separate clusters
+  p #print the results
+}
+
+ggpairs(kfc_bygrp_factors, mapping = aes(fill=factor(km$cluster)),
+        lower = list(
+          continuous = my.fun.km
+          ),
+        col = 1:14,
+        title = "Fig 1 Correlation Matrix with clusters, variables 1 to 14")+
+  labs(caption = "Note that variables with at least one level fully covered by one cluster will not produce ellipse clustering")+
+  theme(plot.title = element_text(size = 20) )
+```
+
+Note: most factors in this matrix did not contribute much to the culster separation.
+
+```{r, fig.height=10, fig.width=15}
+ggpairs(kfc_bygrp_factors, mapping = aes(fill=factor(km$cluster)),
+        lower = list(
+          continuous = my.fun.km
+          ),
+        col = 15:30,
+        title = "Fig 2 Correlation Matrix with clusters, variables 15 to 30")+
+  labs(caption = "Note that variables with at least one level fully covered by one cluster will not produce ellipse clustering")+
+  theme(plot.title = element_text(size = 20) )
+```
+
+Note: Some factors in this matrix contributed much to the cluster separation. For example, slab hardness separated two clusters on dimension one nicely. Weak layer distance separated two clusters on dimension two nicely.
+
+```{r, fig.height=10, fig.width=15}
+ggpairs(kfc_bygrp_factors, mapping = aes(fill=factor(km$cluster)),
+        lower = list(
+          continuous = my.fun.km
+          ),
+        col = 31:45,
+        title = "Fig 3 Correlation Matrix with clusters, variables 31 to 45")+
+  labs(caption = "Note that variables with at least one level fully covered by one cluster will not produce ellipse clustering")+
+  theme(plot.title = element_text(size = 20) )
+```
+
+Note: Some factors in this matrix contributed much to the cluster separation.  For example, high angle separated two clusters on dimension one nicely. Without safe spot separated two clusters on dimension two nicely.
+
+With the biplot below we can check all the factors' contribution to the clustering together. The cluster 3 seems to be more "technical" than others.
+
+```{r, fig.height=10, fig.width=10}
+# target classes as numeric
+classes <- as.numeric(factor(kfc_bygroup_f_s$km.cluster))
+#plot the lda results as biplot
+plot(lda.km, dimen = 2, 
+     pch = classes, 
+     col = classes,
+     main = "Fig. Biplot for separating clusters identified by K means distance")+
+lda.arrows(lda.km, myscale = 5)
+```
+
+### Group membership in the clusters. 
+
+```{r, fig.height=8, fig.width=8}
+fviz_cluster(km, data = kfc_bygroup_f_s, main ="Clustering of bc ski groups with k = 3 ", repel = T)
+
+```
+
+```{r}
+write_rds(kfc, "data/kfc_16062023.rds")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
